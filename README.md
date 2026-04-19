@@ -43,8 +43,43 @@ Run it through the project script:
 
 The Codex app Run button is wired to the same script through `.codex/environments/environment.toml`.
 
+## Packaging For Release
+
+SmartControl now has a repeatable local packaging flow for GitHub Releases:
+
+```bash
+./script/build_and_run.sh --package
+```
+
+That produces release artifacts in `dist/release/<version>/`:
+
+- `SmartControl-<version>.zip`
+- `SmartControl-<version>.dmg`
+- SHA-256 checksum files
+- a release notes template
+- a simple release manifest
+
+Version metadata is source-controlled in:
+
+- `VERSION`
+- `BUILD_NUMBER`
+
+You can override either at package time:
+
+```bash
+APP_VERSION=0.2.0 BUILD_NUMBER=2 ./script/build_and_run.sh --package
+```
+
+## Distribution Notes
+
+- Current release artifacts are ad-hoc signed for local distribution and testing.
+- They are not yet notarized.
+- For public GitHub Releases, the next step is replacing ad-hoc signing with Developer ID signing and notarization.
+- Sparkle auto-update is a good fit later, once GitHub release artifacts and signing are stable.
+
 ## Notes
 
 - Some SMART operations require administrator access. SmartControl can prompt for that when needed.
 - If `smartctl` is missing, the app falls back to limited drive data from Disk Utility and explains how to install `smartmontools`.
 - Not every disk bridge or enclosure exposes full SMART data, especially over some USB adapters.
+- Some USB enclosures expose SMART health reads but do not pass self-test commands through to the underlying drive.

@@ -38,6 +38,14 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("App") {
+                Label("Version \(bundleVersion) (\(bundleBuild))", systemImage: "shippingbox")
+                    .foregroundStyle(.secondary)
+
+                Text("Local release builds are currently ad-hoc signed for testing. Public GitHub releases should move to Developer ID signing and notarization before Sparkle auto-update is added.")
+                    .foregroundStyle(.secondary)
+            }
+
             Section("How SmartControl Works") {
                 Text("Drive discovery comes from Disk Utility. Deep health data comes from smartctl JSON so the app can turn low-level output into clear health summaries, metrics, and actions.")
                     .foregroundStyle(.secondary)
@@ -84,5 +92,13 @@ struct SettingsView: View {
             Label("SmartControl could not confirm notification permission yet.", systemImage: "questionmark.circle")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var bundleVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Dev"
+    }
+
+    private var bundleBuild: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
     }
 }
