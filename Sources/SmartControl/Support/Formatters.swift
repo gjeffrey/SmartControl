@@ -61,4 +61,41 @@ enum Formatters {
     static func refreshTime(_ date: Date) -> String {
         refreshTimeFormatter().string(from: date)
     }
+
+    static func dateTimeFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }
+
+    static func dateTime(_ date: Date) -> String {
+        dateTimeFormatter().string(from: date)
+    }
+
+    static func signedTemperatureDelta(from previous: Double?, to current: Double?) -> String? {
+        guard let previous, let current else {
+            return nil
+        }
+
+        let delta = Int(current.rounded()) - Int(previous.rounded())
+        guard delta != 0 else {
+            return "unchanged"
+        }
+
+        return delta > 0 ? "+\(delta)°C" : "\(delta)°C"
+    }
+
+    static func signedIntDelta(from previous: Int?, to current: Int?, suffix: String = "") -> String? {
+        guard let previous, let current else {
+            return nil
+        }
+
+        let delta = current - previous
+        guard delta != 0 else {
+            return "unchanged"
+        }
+
+        return delta > 0 ? "+\(delta)\(suffix)" : "\(delta)\(suffix)"
+    }
 }

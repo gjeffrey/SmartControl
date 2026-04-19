@@ -19,8 +19,12 @@ struct DriveDetailView: View {
                                     .controlSize(.large)
                             }
                         case let .loaded(inspection):
+                            if inspection.selfTestStatusInfo != nil {
+                                selfTestCard(for: inspection)
+                            }
                             metricsCard(for: inspection)
-                            recommendationCard(for: inspection)
+                            actionCard(for: inspection)
+                            historyCard(for: inspection, device: snapshot.device)
                             volumesCard(for: snapshot.device)
 
                             if !inspection.attributes.isEmpty {
@@ -50,6 +54,7 @@ struct DriveDetailView: View {
     @ViewBuilder
     private func heroCard(for snapshot: DriveSnapshot) -> some View {
         let device = snapshot.device
+        let activity = model.activity(for: snapshot.id)
 
         SectionCard("") {
             VStack(alignment: .leading, spacing: 20) {
@@ -87,6 +92,9 @@ struct DriveDetailView: View {
                     Label(message, systemImage: "sparkle")
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                } else if activity == .awaitingAdminRefresh {
+                    Label("A self-test may be running. Use Refresh as Admin to check progress or confirm the result on this drive.", systemImage: "lock.fill")
+                        .foregroundStyle(.secondary)
                 } else if let error = model.lastRefreshError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
@@ -175,9 +183,124 @@ struct DriveDetailView: View {
         }
     }
 
-    private func recommendationCard(for inspection: DeviceInspection) -> some View {
-        SectionCard("Actions") {
+    private func selfTestCard(for inspection: DeviceInspection) -> some View {
+        let status = inspection.selfTestStatusInfo
+
+        return SectionCard("Self-Test") {
+            if let status {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .center, spacing: 14) {
+                        Image(systemName: selfTestIcon(status))
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(selfTestColor(status))
+                            .frame(width: 40, height: 40)
+                            .background(selfTestColor(status).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(status.title)
+                                .font(.title3.weight(.semibold))
+                            Text(status.detail)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Text(Formatters.refreshTime(inspection.capturedAt))
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if status.isInProgress, let remaining = status.progressRemaining {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView(value: Double(100 - remaining), total: 100)
+                                .tint(selfTestColor(status))
+                            Text("About \(remaining)% of the test remains. SmartControl will check again automatically.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if status.kind == .passed {
+                        Label("The most recent self-test finished successfully.", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else if status.kind == .failed || status.kind == .aborted {
+                        Label("Review this result before relying on the drive.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func selfTestIcon(_ status: SelfTestStatusInfo) -> String {
+        switch status.kind {
+        case .running:
+            return "hourglass"
+        case .passed:
+            return "checkmark.seal.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        case .aborted:
+            return "stop.circle.fill"
+        case .unknown:
+            return "questionmark.circle.fill"
+        }
+    }
+
+    private func selfTestColor(_ status: SelfTestStatusInfo) -> Color {
+        switch status.kind {
+        case .running:
+            return .blue
+        case .passed:
+            return .green
+        case .failed:
+            return .red
+        case .aborted:
+            return .orange
+        case .unknown:
+            return .secondary
+        }
+    }
+
+    private func actionCard(for inspection: DeviceInspection) -> some View {
+        let selfTestRunning = inspection.selfTestStatusInfo?.isInProgress == true
+        let awaitingAdminRefresh = model.selectedSnapshot.map { model.activity(for: $0.id) == .awaitingAdminRefresh } ?? false
+
+        return SectionCard("Actions") {
             VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    Button {
+                        Task { await model.runSelfTest(.short) }
+                    } label: {
+                        Label("Run Short Test", systemImage: "bolt.horizontal.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(selfTestRunning)
+
+                    Button {
+                        Task { await model.runSelfTest(.extended) }
+                    } label: {
+                        Label("Run Extended Test", systemImage: "hourglass.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(selfTestRunning)
+
+                    Button {
+                        Task { await model.refreshSelection(forcePrivilegePrompt: model.preferAdministratorAccess) }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                Text(selfTestRunning
+                    ? "A self-test is currently running. SmartControl will refresh automatically and show the result here when it finishes."
+                    : awaitingAdminRefresh
+                        ? "This drive likely needs administrator access before SmartControl can show self-test progress or results."
+                        : "Short tests are quick confidence checks. Extended tests are better before a migration, backup validation, or when a drive starts behaving strangely.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
                 ForEach(inspection.recommendations, id: \.self) { recommendation in
                     Label(recommendation, systemImage: "arrow.forward.circle")
                         .font(.body)
@@ -209,6 +332,111 @@ struct DriveDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func historyCard(for inspection: DeviceInspection, device: StorageDevice) -> some View {
+        let previous = model.comparisonBaseline(
+            for: device.deviceIdentifier,
+            currentCapturedAt: inspection.capturedAt
+        )
+        let recent = model.recentHistory(for: device.deviceIdentifier)
+
+        return SectionCard("Recent Checks") {
+            VStack(alignment: .leading, spacing: 16) {
+                if let previous {
+                    Text("Since \(Formatters.dateTime(previous.capturedAt))")
+                        .font(.headline)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        historyChangeRow(
+                            title: "Temperature",
+                            current: Formatters.temperature(inspection.summary.temperatureC),
+                            change: Formatters.signedTemperatureDelta(from: previous.temperatureC, to: inspection.summary.temperatureC)
+                        )
+                        historyChangeRow(
+                            title: "Endurance Used",
+                            current: Formatters.percentage(inspection.summary.percentageUsed),
+                            change: Formatters.signedIntDelta(from: previous.percentageUsed, to: inspection.summary.percentageUsed, suffix: "%")
+                        )
+                        historyChangeRow(
+                            title: "Spare Remaining",
+                            current: inspection.summary.availableSpare.map { "\($0)%" } ?? "Unavailable",
+                            change: Formatters.signedIntDelta(from: previous.availableSpare, to: inspection.summary.availableSpare, suffix: "%")
+                        )
+                        historyChangeRow(
+                            title: "Alerts",
+                            current: "\(inspection.alerts.count)",
+                            change: Formatters.signedIntDelta(from: previous.alertsCount, to: inspection.alerts.count)
+                        )
+                    }
+
+                    if inspection.health == previous.health,
+                       inspection.alerts.count == previous.alertsCount,
+                       Formatters.signedTemperatureDelta(from: previous.temperatureC, to: inspection.summary.temperatureC) == "unchanged",
+                       Formatters.signedIntDelta(from: previous.percentageUsed, to: inspection.summary.percentageUsed, suffix: "%") == "unchanged",
+                       Formatters.signedIntDelta(from: previous.availableSpare, to: inspection.summary.availableSpare, suffix: "%") == "unchanged" {
+                        Text("Nothing material has changed since the last meaningful check.")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("SmartControl is now tracking this drive. Refresh later or run a self-test to start building a useful history.")
+                        .foregroundStyle(.secondary)
+                }
+
+                if !recent.isEmpty {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Timeline")
+                            .font(.headline)
+
+                        ForEach(recent) { entry in
+                            HStack {
+                                Text(Formatters.dateTime(entry.capturedAt))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(entry.health.title)
+                                    .foregroundStyle(historyColor(entry.health))
+                                if let temperature = entry.temperatureC {
+                                    Text("\(Int(temperature.rounded()))°C")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .font(.subheadline)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func historyChangeRow(title: String, current: String, change: String?) -> some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(current)
+                .fontWeight(.semibold)
+            if let change {
+                Text(change)
+                    .foregroundStyle(change == "unchanged" ? .secondary : .tertiary)
+                    .frame(minWidth: 80, alignment: .trailing)
+            }
+        }
+        .font(.subheadline)
+    }
+
+    private func historyColor(_ health: OverallHealth) -> Color {
+        switch health {
+        case .healthy:
+            return .green
+        case .caution:
+            return .orange
+        case .critical:
+            return .red
+        case .unknown:
+            return .secondary
         }
     }
 

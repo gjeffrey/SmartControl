@@ -57,6 +57,26 @@ struct DriveSnapshot: Identifiable, Hashable {
     var id: String { device.id }
 }
 
+enum DriveActivity: Hashable {
+    case idle
+    case refreshing
+    case selfTestRunning
+    case awaitingAdminRefresh
+
+    var title: String {
+        switch self {
+        case .idle:
+            return "Idle"
+        case .refreshing:
+            return "Refreshing"
+        case .selfTestRunning:
+            return "Self-test running"
+        case .awaitingAdminRefresh:
+            return "Waiting for admin refresh"
+        }
+    }
+}
+
 enum InspectionState: Hashable {
     case loading
     case loaded(DeviceInspection)
@@ -76,7 +96,7 @@ struct UserFacingIssue: Hashable, Error {
     let recoverySuggestion: String?
 }
 
-enum OverallHealth: String, Hashable {
+enum OverallHealth: String, Hashable, Codable {
     case healthy
     case caution
     case critical
@@ -145,6 +165,111 @@ struct DeviceInspection: Hashable {
     let keyMetrics: [KeyMetric]
     let attributes: [Attribute]
     let rawJSON: String
+}
+
+struct SelfTestStatusInfo: Hashable {
+    enum Kind: Hashable {
+        case running
+        case passed
+        case failed
+        case aborted
+        case unknown
+    }
+
+    let kind: Kind
+    let title: String
+    let detail: String
+    let progressRemaining: Int?
+
+    var isInProgress: Bool {
+        kind == .running
+    }
+
+    var isFinished: Bool {
+        !isInProgress
+    }
+}
+
+extension DeviceInspection {
+    var selfTestStatusInfo: SelfTestStatusInfo? {
+        SelfTestStatusInfo(rawStatus: summary.selfTestStatus)
+    }
+}
+
+extension SelfTestStatusInfo {
+    init?(rawStatus: String?) {
+        guard let rawStatus, !rawStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let lower = rawStatus.lowercased()
+        let progressRemaining = Self.extractPercentage(from: lower)
+
+        if lower.contains("in progress") || lower.contains("remaining") {
+            self.init(
+                kind: .running,
+                title: "Self-test in progress",
+                detail: rawStatus,
+                progressRemaining: progressRemaining
+            )
+        } else if lower.contains("completed without error") || lower.contains("completed successfully") {
+            self.init(
+                kind: .passed,
+                title: "Self-test completed",
+                detail: rawStatus,
+                progressRemaining: nil
+            )
+        } else if lower.contains("aborted") || lower.contains("interrupted") {
+            self.init(
+                kind: .aborted,
+                title: "Self-test stopped",
+                detail: rawStatus,
+                progressRemaining: nil
+            )
+        } else if lower.contains("failed") || lower.contains("error") || lower.contains("read failure") {
+            self.init(
+                kind: .failed,
+                title: "Self-test reported a problem",
+                detail: rawStatus,
+                progressRemaining: nil
+            )
+        } else {
+            self.init(
+                kind: .unknown,
+                title: "Self-test status",
+                detail: rawStatus,
+                progressRemaining: progressRemaining
+            )
+        }
+    }
+
+    private static func extractPercentage(from string: String) -> Int? {
+        guard let range = string.range(of: #"\d+(?=% remaining)"#, options: .regularExpression) else {
+            return nil
+        }
+
+        return Int(string[range])
+    }
+}
+
+struct SelfTestLaunchInfo: Hashable {
+    let userMessage: String
+}
+
+struct HistoricalDriveSnapshot: Codable, Hashable, Identifiable {
+    let deviceIdentifier: String
+    let capturedAt: Date
+    let health: OverallHealth
+    let temperatureC: Double?
+    let powerOnHours: Int?
+    let percentageUsed: Int?
+    let availableSpare: Int?
+    let selfTestStatus: String?
+    let alertsCount: Int
+
+    var id: String {
+        "\(deviceIdentifier)-\(capturedAt.timeIntervalSince1970)"
+    }
 }
 
 enum SmartSelfTestKind: String, CaseIterable, Hashable {

@@ -15,7 +15,7 @@ enum CommandRunnerError: Error {
 struct CommandRunner {
     enum PrivilegeMode {
         case standard
-        case administratorPrompt
+        case administratorPrompt(prompt: String)
     }
 
     func run(
@@ -26,9 +26,22 @@ struct CommandRunner {
         switch privilegeMode {
         case .standard:
             return try await launch(executable: executable, arguments: arguments)
-        case .administratorPrompt:
+        case let .administratorPrompt(prompt):
             let shellCommand = ([executable] + arguments).map(shellEscape).joined(separator: " ")
-            let script = "do shell script \"\(appleScriptEscape(shellCommand))\" with administrator privileges"
+            return try await runShell(shellCommand, privilegeMode: .administratorPrompt(prompt: prompt))
+        }
+    }
+
+    func runShell(
+        _ shellCommand: String,
+        privilegeMode: PrivilegeMode = .standard
+    ) async throws -> CommandResult {
+        switch privilegeMode {
+        case .standard:
+            return try await launch(executable: "/bin/zsh", arguments: ["-lc", shellCommand])
+        case let .administratorPrompt(prompt):
+            let escapedPrompt = appleScriptEscape(prompt)
+            let script = "do shell script \"\(appleScriptEscape(shellCommand))\" with administrator privileges with prompt \"\(escapedPrompt)\""
             return try await launch(executable: "/usr/bin/osascript", arguments: ["-e", script])
         }
     }

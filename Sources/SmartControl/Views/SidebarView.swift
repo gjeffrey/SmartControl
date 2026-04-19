@@ -7,7 +7,7 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $model.selection) {
             ForEach(model.filteredSnapshots) { snapshot in
-                SidebarRow(snapshot: snapshot)
+                SidebarRow(snapshot: snapshot, activity: model.activity(for: snapshot.id))
                     .tag(snapshot.id)
             }
         }
@@ -27,6 +27,7 @@ struct SidebarView: View {
 
 private struct SidebarRow: View {
     let snapshot: DriveSnapshot
+    let activity: DriveActivity
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -42,10 +43,7 @@ private struct SidebarRow: View {
                         .font(.headline)
                         .lineLimit(1)
 
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(statusTitle)
+                    activityIndicator
                 }
 
                 Text(snapshot.device.subtitle)
@@ -56,7 +54,38 @@ private struct SidebarRow: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(snapshot.device.displayName), \(statusTitle)")
+        .accessibilityLabel("\(snapshot.device.displayName), \(activityTitle)")
+    }
+
+    @ViewBuilder
+    private var activityIndicator: some View {
+        switch activity {
+        case .idle:
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+                .accessibilityLabel(statusTitle)
+        case .refreshing:
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: 10, height: 10)
+                .accessibilityLabel("Refreshing")
+        case .selfTestRunning:
+            ProgressView()
+                .controlSize(.mini)
+                .tint(.blue)
+                .frame(width: 10, height: 10)
+                .accessibilityLabel("Self-test running")
+        case .awaitingAdminRefresh:
+            Image(systemName: "lock.fill")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Waiting for admin refresh")
+        }
+    }
+
+    private var activityTitle: String {
+        activity == .idle ? statusTitle : activity.title
     }
 
     private var statusTitle: String {

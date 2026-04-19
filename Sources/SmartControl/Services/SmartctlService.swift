@@ -2,6 +2,8 @@ import Foundation
 
 struct SmartctlService {
     private let runner = CommandRunner()
+    private let batchBeginMarker = "__SMARTCONTROL_BEGIN__"
+    private let batchEndMarker = "__SMARTCONTROL_END__"
     private let candidatePaths = [
         "/opt/homebrew/sbin/smartctl",
         "/usr/local/sbin/smartctl",
@@ -31,43 +33,75 @@ struct SmartctlService {
         let result = try await runner.run(
             executable: executable,
             arguments: arguments,
-            privilegeMode: useAdministratorPrompt ? .administratorPrompt : .standard
+            privilegeMode: useAdministratorPrompt
+                ? .administratorPrompt(prompt: "SmartControl needs administrator access to read detailed SMART data for \(device.displayName).")
+                : .standard
         )
 
-        let output = result.stdout.isEmpty ? result.stderr : result.stdout
         let combinedOutput = [result.stdout, result.stderr].joined(separator: "\n")
+        return inspectionState(
+            for: device,
+            executable: executable,
+            commandDescription: command,
+            output: result.stdout.isEmpty ? result.stderr : result.stdout,
+            combinedOutput: combinedOutput
+        )
+    }
 
-        guard let data = output.data(using: .utf8), let root = try? JSONValue.decode(data: data) else {
-            if isPermissionIssue(combinedOutput) {
-                return .unavailable(
+    func inspectManyWithAdministratorPrompt(
+        devices: [StorageDevice],
+        preferredPath: String
+    ) async throws -> [String: InspectionState] {
+        guard let executable = resolvedSmartctlPath(preferredPath: preferredPath) else {
+            let issue = UserFacingIssue(
+                kind: .smartctlMissing,
+                title: "smartctl Not Found",
+                message: "SmartControl could not find the smartctl executable on this Mac.",
+                recoverySuggestion: "Recommended: install smartmontools with [Homebrew](https://brew.sh) using `brew install smartmontools`, then reopen SmartControl. If you installed it elsewhere, set the path manually in Settings."
+            )
+            return Dictionary(uniqueKeysWithValues: devices.map { ($0.id, .unavailable(issue)) })
+        }
+
+        let command = devices.map { device in
+            let escapedNode = shellEscape(device.deviceNode)
+            let escapedExecutable = shellEscape(executable)
+            return """
+            printf '%s%s\\n' '\(batchBeginMarker)' \(escapedNode)
+            \(escapedExecutable) --all --json \(escapedNode) 2>&1 || true
+            printf '\\n%s%s\\n' '\(batchEndMarker)' \(escapedNode)
+            """
+        }.joined(separator: "\n")
+
+        let result = try await runner.runShell(
+            command,
+            privilegeMode: .administratorPrompt(prompt: "SmartControl needs administrator access to refresh SMART data for your connected drives.")
+        )
+        let segments = parseBatchOutput(result.stdout)
+
+        var states: [String: InspectionState] = [:]
+        for device in devices {
+            let commandDescription = ([executable, "--all", "--json", device.deviceNode]).joined(separator: " ")
+            if let output = segments[device.deviceNode] {
+                states[device.id] = inspectionState(
+                    for: device,
+                    executable: executable,
+                    commandDescription: commandDescription,
+                    output: output,
+                    combinedOutput: output
+                )
+            } else {
+                states[device.id] = .unavailable(
                     UserFacingIssue(
-                        kind: .permissionRequired,
-                        title: "Administrator Access Needed",
-                        message: "smartctl could not read \(device.displayName) without elevated privileges.",
-                        recoverySuggestion: "Use “Refresh as Admin” or turn on administrator access in Settings."
+                        kind: .commandFailed,
+                        title: "SMART Read Failed",
+                        message: "SmartControl did not receive a response for \(device.displayName).",
+                        recoverySuggestion: "Try again with administrator access."
                     )
                 )
             }
-
-            return .unavailable(
-                UserFacingIssue(
-                    kind: .commandFailed,
-                    title: "SMART Read Failed",
-                    message: combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "smartctl did not return usable data for this disk." : combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines),
-                    recoverySuggestion: "Check the selected smartctl path, then try again with administrator access."
-                )
-            )
         }
 
-        let inspection = makeInspection(
-            root: root,
-            rawJSON: output,
-            device: device,
-            commandDescription: command,
-            smartctlPath: executable
-        )
-
-        return .loaded(inspection)
+        return states
     }
 
     func runSelfTest(
@@ -75,7 +109,7 @@ struct SmartctlService {
         kind: SmartSelfTestKind,
         preferredPath: String,
         useAdministratorPrompt: Bool
-    ) async throws -> Result<String, UserFacingIssue> {
+    ) async throws -> Result<SelfTestLaunchInfo, UserFacingIssue> {
         guard let executable = resolvedSmartctlPath(preferredPath: preferredPath) else {
             return .failure(
                 UserFacingIssue(
@@ -90,7 +124,9 @@ struct SmartctlService {
         let result = try await runner.run(
             executable: executable,
             arguments: ["-t", kind.smartctlArgument, device.deviceNode],
-            privilegeMode: useAdministratorPrompt ? .administratorPrompt : .standard
+            privilegeMode: useAdministratorPrompt
+                ? .administratorPrompt(prompt: "SmartControl needs administrator access to start a SMART self-test on \(device.displayName).")
+                : .standard
         )
         let combined = [result.stdout, result.stderr]
             .joined(separator: "\n")
@@ -118,7 +154,7 @@ struct SmartctlService {
             )
         }
 
-        return .success(combined.isEmpty ? "\(kind.buttonTitle) started for \(device.displayName)." : combined)
+        return .success(SelfTestLaunchInfo(userMessage: summarizeSelfTestLaunch(kind: kind, output: combined, device: device)))
     }
 
     private func resolvedSmartctlPath(preferredPath: String) -> String? {
@@ -128,6 +164,46 @@ struct SmartctlService {
         }
 
         return candidatePaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+    }
+
+    private func inspectionState(
+        for device: StorageDevice,
+        executable: String,
+        commandDescription: String,
+        output: String,
+        combinedOutput: String
+    ) -> InspectionState {
+        guard let data = output.data(using: .utf8), let root = try? JSONValue.decode(data: data) else {
+            if isPermissionIssue(combinedOutput) {
+                return .unavailable(
+                    UserFacingIssue(
+                        kind: .permissionRequired,
+                        title: "Administrator Access Needed",
+                        message: "smartctl could not read \(device.displayName) without elevated privileges.",
+                        recoverySuggestion: "Use “Refresh as Admin” or turn on administrator access in Settings."
+                    )
+                )
+            }
+
+            return .unavailable(
+                UserFacingIssue(
+                    kind: .commandFailed,
+                    title: "SMART Read Failed",
+                    message: combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "smartctl did not return usable data for this disk." : combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines),
+                    recoverySuggestion: "Check the selected smartctl path, then try again with administrator access."
+                )
+            )
+        }
+
+        let inspection = makeInspection(
+            root: root,
+            rawJSON: output,
+            device: device,
+            commandDescription: commandDescription,
+            smartctlPath: executable
+        )
+
+        return .loaded(inspection)
     }
 
     private func makeInspection(
@@ -477,5 +553,72 @@ struct SmartctlService {
             || lowered.contains("operation not permitted")
             || lowered.contains("must be root")
             || lowered.contains("admin")
+    }
+
+    private func summarizeSelfTestLaunch(
+        kind: SmartSelfTestKind,
+        output: String,
+        device: StorageDevice
+    ) -> String {
+        let waitMinutes = extractWaitMinutes(from: output)
+        let prefix = kind == .short ? "Short self-test started for \(device.displayName)." : "Extended self-test started for \(device.displayName)."
+        let adminHint = device.isInternal ? " Use Refresh as Admin later to check progress on this drive." : ""
+
+        if let waitMinutes {
+            return "\(prefix) Expected time: about \(waitMinutes) minute\(waitMinutes == 1 ? "" : "s").\(adminHint)"
+        }
+
+        if output.lowercased().contains("testing has begun") {
+            return "\(prefix) SmartControl will keep checking until the result is available.\(adminHint)"
+        }
+
+        return "\(prefix)\(adminHint)"
+    }
+
+    private func extractWaitMinutes(from string: String) -> Int? {
+        guard let range = string.range(of: #"please wait\s+(\d+)\s+minutes?"#, options: [.regularExpression, .caseInsensitive]) else {
+            return nil
+        }
+
+        let substring = String(string[range])
+        guard let minuteRange = substring.range(of: #"\d+"#, options: .regularExpression) else {
+            return nil
+        }
+
+        return Int(substring[minuteRange])
+    }
+
+    private func parseBatchOutput(_ output: String) -> [String: String] {
+        var segments: [String: String] = [:]
+        var currentDeviceNode: String?
+        var currentLines: [String] = []
+
+        for line in output.components(separatedBy: .newlines) {
+            if line.hasPrefix(batchBeginMarker) {
+                currentDeviceNode = String(line.dropFirst(batchBeginMarker.count))
+                currentLines = []
+                continue
+            }
+
+            if line.hasPrefix(batchEndMarker) {
+                let deviceNode = String(line.dropFirst(batchEndMarker.count))
+                if let currentDeviceNode, deviceNode == currentDeviceNode {
+                    segments[deviceNode] = currentLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                currentDeviceNode = nil
+                currentLines = []
+                continue
+            }
+
+            if currentDeviceNode != nil {
+                currentLines.append(line)
+            }
+        }
+
+        return segments
+    }
+
+    private func shellEscape(_ string: String) -> String {
+        "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
