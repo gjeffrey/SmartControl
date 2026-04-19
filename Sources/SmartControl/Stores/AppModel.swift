@@ -7,6 +7,7 @@ final class AppModel {
     private let diskDiscovery = DiskDiscoveryService()
     private let smartctl = SmartctlService()
     private let historyStore = InspectionHistoryStore()
+    private let notifications = NotificationService()
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var lastMissingToolRecheckAt: Date?
     @ObservationIgnored private let missingToolRecheckCooldown: TimeInterval = 6
@@ -25,10 +26,12 @@ final class AppModel {
     var lastRefreshError: String?
     var smartctlPathOverride: String
     var preferAdministratorAccess: Bool
+    var notificationsEnabled: Bool
 
     init() {
         smartctlPathOverride = defaults.string(forKey: "smartctlPathOverride") ?? ""
         preferAdministratorAccess = defaults.bool(forKey: "preferAdministratorAccess")
+        notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
         historyByDevice = (try? historyStore.loadAll()) ?? [:]
     }
 
@@ -73,6 +76,7 @@ final class AppModel {
             isRefreshing = false
             defaults.set(smartctlPathOverride, forKey: "smartctlPathOverride")
             defaults.set(preferAdministratorAccess, forKey: "preferAdministratorAccess")
+            defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
         }
 
         do {
@@ -283,6 +287,21 @@ final class AppModel {
         }
     }
 
+    func handleNotificationPreferenceChange(from oldValue: Bool, to newValue: Bool) async {
+        guard oldValue != newValue else {
+            return
+        }
+
+        if newValue {
+            let granted = await notifications.requestAuthorization()
+            if !granted {
+                notificationsEnabled = false
+            }
+        }
+
+        defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
+    }
+
     func history(for deviceIdentifier: String) -> [HistoricalDriveSnapshot] {
         historyByDevice[deviceIdentifier] ?? []
     }
@@ -369,7 +388,8 @@ final class AppModel {
                 for: identifier,
                 kind: pendingKind ?? inferredSelfTestKind(for: identifier).selfTestKind ?? .short,
                 with: currentStatus,
-                at: inspection.capturedAt
+                at: inspection.capturedAt,
+                deviceName: device.displayName
             )
             return
         }
@@ -386,6 +406,11 @@ final class AppModel {
             currentTaskByDevice[identifier] = nil
         }
 
+        notifyIfHealthRegressed(
+            from: previousInspection,
+            to: inspection,
+            device: device
+        )
         updateActivityFromTask(for: identifier)
     }
 
@@ -475,7 +500,8 @@ final class AppModel {
         for identifier: String,
         kind: SmartSelfTestKind,
         with status: SelfTestStatusInfo,
-        at date: Date
+        at date: Date,
+        deviceName: String
     ) {
         let state: DriveTaskState
         switch status.kind {
@@ -500,6 +526,19 @@ final class AppModel {
         currentTaskByDevice[identifier] = nil
         pendingSelfTestKindByDevice[identifier] = nil
         updateActivityFromTask(for: identifier)
+
+        guard notificationsEnabled else {
+            return
+        }
+
+        let title = status.kind == .passed ? "\(deviceName) self-test finished" : "\(deviceName) self-test needs attention"
+        Task {
+            await notifications.postNotificationIfNeeded(
+                id: "self-test-\(identifier)-\(date.timeIntervalSince1970)",
+                title: title,
+                body: status.detail
+            )
+        }
     }
 
     private func handleUnavailableState(
@@ -597,5 +636,53 @@ final class AppModel {
         }
 
         return .selfTest(.short)
+    }
+
+    private func notifyIfHealthRegressed(
+        from previousInspection: DeviceInspection?,
+        to currentInspection: DeviceInspection,
+        device: StorageDevice
+    ) {
+        guard notificationsEnabled, let previousInspection else {
+            return
+        }
+
+        let previousRank = healthSeverityRank(previousInspection.health)
+        let currentRank = healthSeverityRank(currentInspection.health)
+        let alertsIncreased = currentInspection.alerts.count > previousInspection.alerts.count
+
+        guard currentRank > previousRank || alertsIncreased else {
+            return
+        }
+
+        let body: String
+        if currentRank > previousRank, let reason = currentInspection.reasons.first {
+            body = reason
+        } else if alertsIncreased, let alert = currentInspection.alerts.first {
+            body = alert
+        } else {
+            body = currentInspection.headline
+        }
+
+        Task {
+            await notifications.postNotificationIfNeeded(
+                id: "health-\(device.deviceIdentifier)-\(currentInspection.capturedAt.timeIntervalSince1970)",
+                title: "\(device.displayName) changed health status",
+                body: body
+            )
+        }
+    }
+
+    private func healthSeverityRank(_ health: OverallHealth) -> Int {
+        switch health {
+        case .healthy:
+            return 0
+        case .caution:
+            return 1
+        case .critical:
+            return 2
+        case .unknown:
+            return -1
+        }
     }
 }
