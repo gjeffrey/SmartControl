@@ -26,6 +26,7 @@ struct DriveDetailView: View {
                                 selfTestCard(for: inspection)
                             }
                             changeSummaryCard(for: snapshot.device, inspection: inspection)
+                            recentEventsCard(for: snapshot.device)
                             metricsCard(for: snapshot, inspection: inspection)
                             actionCard(for: snapshot, inspection: inspection)
                             historyCard(for: inspection, device: snapshot.device)
@@ -301,6 +302,37 @@ struct DriveDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func recentEventsCard(for device: StorageDevice) -> some View {
+        let events = model.recentEvents(for: device.deviceIdentifier)
+
+        if !events.isEmpty {
+            SectionCard("Recent Events") {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(events) { event in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: eventIcon(event))
+                                .foregroundStyle(eventColor(event))
+                                .frame(width: 16)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(event.title)
+                                    .font(.headline)
+                                Text(event.detail)
+                                    .foregroundStyle(.secondary)
+                                Text(Formatters.dateTime(event.createdAt))
+                                    .font(.footnote)
+                                    .foregroundStyle(.tertiary)
+                            }
+
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func selfTestCard(for inspection: DeviceInspection) -> some View {
         let status = inspection.selfTestStatusInfo
 
@@ -400,6 +432,32 @@ struct DriveDetailView: View {
         case .succeeded:
             return .green
         case .failed:
+            return .red
+        }
+    }
+
+    private func eventIcon(_ event: MonitoringEvent) -> String {
+        switch event.kind {
+        case .selfTestPassed:
+            return "checkmark.circle"
+        case .selfTestFailed:
+            return "exclamationmark.triangle"
+        case .healthRegressed:
+            return "arrow.down.circle"
+        case .alertsIncreased:
+            return "bell.badge"
+        case .sustainedTemperature:
+            return "thermometer.medium"
+        }
+    }
+
+    private func eventColor(_ event: MonitoringEvent) -> Color {
+        switch event.severity {
+        case .info:
+            return .secondary
+        case .warning:
+            return .orange
+        case .critical:
             return .red
         }
     }

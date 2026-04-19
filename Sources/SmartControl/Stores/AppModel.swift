@@ -7,6 +7,7 @@ final class AppModel {
     private let diskDiscovery = DiskDiscoveryService()
     private let smartctl = SmartctlService()
     private let historyStore = InspectionHistoryStore()
+    private let eventStore = MonitoringEventStore()
     private let notifications = NotificationService()
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var lastMissingToolRecheckAt: Date?
@@ -19,6 +20,7 @@ final class AppModel {
 
     var snapshots: [DriveSnapshot] = []
     var historyByDevice: [String: [HistoricalDriveSnapshot]] = [:]
+    var eventsByDevice: [String: [MonitoringEvent]] = [:]
     var activityByDevice: [String: DriveActivity] = [:]
     var currentTaskByDevice: [String: DriveTask] = [:]
     var recentTaskByDevice: [String: DriveTask] = [:]
@@ -40,6 +42,7 @@ final class AppModel {
         monitoringCadence = MonitoringCadence(rawValue: defaults.integer(forKey: "monitoringCadence")) ?? .off
         monitoringExternalOnly = defaults.object(forKey: "monitoringExternalOnly") as? Bool ?? true
         historyByDevice = (try? historyStore.loadAll()) ?? [:]
+        eventsByDevice = (try? eventStore.loadAll()) ?? [:]
     }
 
     var filteredSnapshots: [DriveSnapshot] {
@@ -393,6 +396,10 @@ final class AppModel {
         Array(history(for: deviceIdentifier).suffix(limit).reversed())
     }
 
+    func recentEvents(for deviceIdentifier: String, limit: Int = 5) -> [MonitoringEvent] {
+        Array((eventsByDevice[deviceIdentifier] ?? []).suffix(limit).reversed())
+    }
+
     func changeSummary(for device: StorageDevice, inspection: DeviceInspection) -> [String] {
         guard let previous = comparisonBaseline(
             for: device.deviceIdentifier,
@@ -533,7 +540,7 @@ final class AppModel {
             currentTaskByDevice[identifier] = nil
         }
 
-        notifyIfHealthRegressed(
+        evaluateMonitoringEvents(
             from: previousInspection,
             to: inspection,
             device: device
@@ -657,18 +664,16 @@ final class AppModel {
         pendingSelfTestKindByDevice[identifier] = nil
         updateActivityFromTask(for: identifier)
 
-        guard notificationsEnabled else {
-            return
-        }
-
-        let title = status.kind == .passed ? "\(deviceName) self-test finished" : "\(deviceName) self-test needs attention"
-        Task {
-            await notifications.postNotificationIfNeeded(
-                id: "self-test-\(identifier)-\(date.timeIntervalSince1970)",
-                title: title,
-                body: status.detail
-            )
-        }
+        let event = MonitoringEvent(
+            deviceIdentifier: identifier,
+            kind: status.kind == .passed ? .selfTestPassed : .selfTestFailed,
+            severity: status.kind == .passed ? .info : .warning,
+            title: status.kind == .passed ? "Self-test finished" : "Self-test needs attention",
+            detail: status.detail,
+            createdAt: date
+        )
+        recordEvent(event)
+        notifyIfAllowed(for: event, deviceName: deviceName)
     }
 
     private func handleUnavailableState(
@@ -797,12 +802,12 @@ final class AppModel {
         return true
     }
 
-    private func notifyIfHealthRegressed(
+    private func evaluateMonitoringEvents(
         from previousInspection: DeviceInspection?,
         to currentInspection: DeviceInspection,
         device: StorageDevice
     ) {
-        guard notificationsEnabled, let previousInspection else {
+        guard let previousInspection else {
             return
         }
 
@@ -810,24 +815,89 @@ final class AppModel {
         let currentRank = healthSeverityRank(currentInspection.health)
         let alertsIncreased = currentInspection.alerts.count > previousInspection.alerts.count
 
-        guard currentRank > previousRank || alertsIncreased else {
-            return
+        if currentRank > previousRank {
+            let detail = currentInspection.reasons.first ?? currentInspection.headline
+            let severity: MonitoringEventSeverity = currentInspection.health == .critical ? .critical : .warning
+            let event = MonitoringEvent(
+                deviceIdentifier: device.deviceIdentifier,
+                kind: .healthRegressed,
+                severity: severity,
+                title: "Health status got worse",
+                detail: detail,
+                createdAt: currentInspection.capturedAt
+            )
+            recordEvent(event)
+            notifyIfAllowed(for: event, deviceName: device.displayName)
         }
 
-        let body: String
-        if currentRank > previousRank, let reason = currentInspection.reasons.first {
-            body = reason
-        } else if alertsIncreased, let alert = currentInspection.alerts.first {
-            body = alert
-        } else {
-            body = currentInspection.headline
+        if alertsIncreased {
+            let newAlertCount = currentInspection.alerts.count - previousInspection.alerts.count
+            let detail = currentInspection.alerts.first ?? "smartctl reported a new alert."
+            let event = MonitoringEvent(
+                deviceIdentifier: device.deviceIdentifier,
+                kind: .alertsIncreased,
+                severity: .warning,
+                title: newAlertCount == 1 ? "New SMART alert" : "\(newAlertCount) new SMART alerts",
+                detail: detail,
+                createdAt: currentInspection.capturedAt
+            )
+            recordEvent(event)
+            notifyIfAllowed(for: event, deviceName: device.displayName)
+        }
+
+        if shouldEmitSustainedTemperatureEvent(for: device, currentInspection: currentInspection) {
+            let temperature = Formatters.temperature(currentInspection.summary.temperatureC)
+            let event = MonitoringEvent(
+                deviceIdentifier: device.deviceIdentifier,
+                kind: .sustainedTemperature,
+                severity: .warning,
+                title: "Temperature stayed elevated",
+                detail: "Drive temperature has stayed elevated across multiple checks and is currently \(temperature).",
+                createdAt: currentInspection.capturedAt
+            )
+            recordEvent(event)
+            notifyIfAllowed(for: event, deviceName: device.displayName)
+        }
+    }
+
+    private func shouldEmitSustainedTemperatureEvent(
+        for device: StorageDevice,
+        currentInspection: DeviceInspection
+    ) -> Bool {
+        guard let currentTemperature = currentInspection.summary.temperatureC,
+              currentTemperature >= 55 else {
+            return false
+        }
+
+        let recentSnapshots = history(for: device.deviceIdentifier).suffix(2)
+        guard recentSnapshots.count == 2 else {
+            return false
+        }
+
+        let sustained = recentSnapshots.allSatisfy { snapshot in
+            guard let temperature = snapshot.temperatureC else {
+                return false
+            }
+            return temperature >= 55
+        }
+
+        return sustained
+    }
+
+    private func recordEvent(_ event: MonitoringEvent) {
+        eventsByDevice = (try? eventStore.record(event, in: eventsByDevice)) ?? eventsByDevice
+    }
+
+    private func notifyIfAllowed(for event: MonitoringEvent, deviceName: String) {
+        guard notificationsEnabled else {
+            return
         }
 
         Task {
             await notifications.postNotificationIfNeeded(
-                id: "health-\(device.deviceIdentifier)-\(currentInspection.capturedAt.timeIntervalSince1970)",
-                title: "\(device.displayName) changed health status",
-                body: body
+                id: "event-\(event.deviceIdentifier)-\(event.kind.rawValue)-\(event.createdAt.timeIntervalSince1970)",
+                title: "\(deviceName): \(event.title)",
+                body: event.detail
             )
         }
     }

@@ -331,6 +331,44 @@ struct HistoricalDriveSnapshot: Codable, Hashable, Identifiable {
     }
 }
 
+enum MonitoringEventSeverity: String, Codable, Hashable {
+    case info
+    case warning
+    case critical
+
+    var title: String {
+        switch self {
+        case .info:
+            return "Info"
+        case .warning:
+            return "Warning"
+        case .critical:
+            return "Critical"
+        }
+    }
+}
+
+enum MonitoringEventKind: String, Codable, Hashable {
+    case selfTestPassed
+    case selfTestFailed
+    case healthRegressed
+    case alertsIncreased
+    case sustainedTemperature
+}
+
+struct MonitoringEvent: Codable, Hashable, Identifiable {
+    let deviceIdentifier: String
+    let kind: MonitoringEventKind
+    let severity: MonitoringEventSeverity
+    let title: String
+    let detail: String
+    let createdAt: Date
+
+    var id: String {
+        "\(deviceIdentifier)-\(kind.rawValue)-\(createdAt.timeIntervalSince1970)"
+    }
+}
+
 enum MonitoringCadence: Int, CaseIterable, Hashable, Identifiable {
     case off = 0
     case every30Minutes = 30
