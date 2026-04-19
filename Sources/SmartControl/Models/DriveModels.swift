@@ -57,6 +57,65 @@ struct DriveSnapshot: Identifiable, Hashable {
     var id: String { device.id }
 }
 
+enum DriveTaskKind: Hashable {
+    case refresh(admin: Bool)
+    case selfTest(SmartSelfTestKind)
+
+    var title: String {
+        switch self {
+        case let .refresh(admin):
+            return admin ? "Admin refresh" : "Refresh"
+        case let .selfTest(kind):
+            switch kind {
+            case .short:
+                return "Short self-test"
+            case .extended:
+                return "Extended self-test"
+            }
+        }
+    }
+
+    var isSelfTest: Bool {
+        if case .selfTest = self {
+            return true
+        }
+        return false
+    }
+
+    var selfTestKind: SmartSelfTestKind? {
+        if case let .selfTest(kind) = self {
+            return kind
+        }
+        return nil
+    }
+}
+
+enum DriveTaskState: Hashable {
+    case running
+    case waitingForAdmin
+    case succeeded
+    case failed
+}
+
+struct DriveTask: Hashable, Identifiable {
+    let deviceIdentifier: String
+    let kind: DriveTaskKind
+    var state: DriveTaskState
+    var title: String
+    var detail: String
+    let startedAt: Date
+    var updatedAt: Date
+    var progressRemaining: Int?
+
+    var id: String {
+        "\(deviceIdentifier)-\(kind.title)-\(startedAt.timeIntervalSince1970)"
+    }
+
+    var isActive: Bool {
+        state == .running || state == .waitingForAdmin
+    }
+}
+
 enum DriveActivity: Hashable {
     case idle
     case refreshing
@@ -275,6 +334,15 @@ struct HistoricalDriveSnapshot: Codable, Hashable, Identifiable {
 enum SmartSelfTestKind: String, CaseIterable, Hashable {
     case short
     case extended
+
+    var title: String {
+        switch self {
+        case .short:
+            return "Short self-test"
+        case .extended:
+            return "Extended self-test"
+        }
+    }
 
     var smartctlArgument: String {
         switch self {

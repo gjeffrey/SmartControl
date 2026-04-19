@@ -10,18 +10,19 @@ final class AppModel {
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var lastMissingToolRecheckAt: Date?
     @ObservationIgnored private let missingToolRecheckCooldown: TimeInterval = 6
-    @ObservationIgnored private var selfTestRefreshTask: Task<Void, Never>?
-    @ObservationIgnored private var activeSelfTestDeviceIdentifier: String?
+    @ObservationIgnored private var selfTestRefreshTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let selfTestRefreshInterval: Duration = .seconds(10)
+    @ObservationIgnored private var pendingSelfTestKindByDevice: [String: SmartSelfTestKind] = [:]
 
     var snapshots: [DriveSnapshot] = []
     var historyByDevice: [String: [HistoricalDriveSnapshot]] = [:]
     var activityByDevice: [String: DriveActivity] = [:]
+    var currentTaskByDevice: [String: DriveTask] = [:]
+    var recentTaskByDevice: [String: DriveTask] = [:]
     var selection: String?
     var searchText = ""
     var isRefreshing = false
     var lastRefreshError: String?
-    var lastActionMessage: String?
     var smartctlPathOverride: String
     var preferAdministratorAccess: Bool
 
@@ -56,10 +57,17 @@ final class AppModel {
         activityByDevice[deviceIdentifier] ?? .idle
     }
 
+    func currentTask(for deviceIdentifier: String) -> DriveTask? {
+        currentTaskByDevice[deviceIdentifier]
+    }
+
+    func recentTask(for deviceIdentifier: String) -> DriveTask? {
+        recentTaskByDevice[deviceIdentifier]
+    }
+
     func refresh(forcePrivilegePrompt: Bool = false) async {
         isRefreshing = true
         lastRefreshError = nil
-        lastActionMessage = nil
 
         defer {
             isRefreshing = false
@@ -71,7 +79,10 @@ final class AppModel {
             let devices = try await diskDiscovery.discoverDevices()
             snapshots = devices.map { DriveSnapshot(device: $0, inspectionState: .loading) }
             for device in devices {
-                activityByDevice[device.id] = .refreshing
+                setRefreshTask(
+                    for: device.id,
+                    admin: forcePrivilegePrompt || preferAdministratorAccess
+                )
             }
 
             if selection == nil || !snapshots.contains(where: { $0.id == selection }) {
@@ -140,12 +151,13 @@ final class AppModel {
         }
 
         do {
-            setActivity(.refreshing, for: snapshot.id)
+            let usingAdmin = forcePrivilegePrompt || (respectAdminPreference && preferAdministratorAccess)
+            setRefreshTask(for: snapshot.id, admin: usingAdmin)
             updateInspectionState(.loading, for: snapshot.id)
             let state = try await smartctl.inspect(
                 device: snapshot.device,
                 preferredPath: smartctlPathOverride,
-                useAdministratorPrompt: forcePrivilegePrompt || (respectAdminPreference && preferAdministratorAccess)
+                useAdministratorPrompt: usingAdmin
             )
             updateInspectionState(state, for: snapshot.id)
         } catch {
@@ -193,6 +205,7 @@ final class AppModel {
         }
 
         do {
+            pendingSelfTestKindByDevice[selectedSnapshot.id] = kind
             let result = try await smartctl.runSelfTest(
                 on: selectedSnapshot.device,
                 kind: kind,
@@ -202,8 +215,35 @@ final class AppModel {
 
             switch result {
             case let .success(info):
-                lastActionMessage = info.userMessage
-                setActivity(selectedSnapshot.device.isInternal ? .awaitingAdminRefresh : .selfTestRunning, for: selectedSnapshot.id)
+                if selectedSnapshot.device.isInternal {
+                    setTask(
+                        DriveTask(
+                            deviceIdentifier: selectedSnapshot.id,
+                            kind: .selfTest(kind),
+                            state: .waitingForAdmin,
+                            title: "\(kind.title) started",
+                            detail: "Use Refresh as Admin to check progress or confirm the result on this drive.",
+                            startedAt: Date(),
+                            updatedAt: Date(),
+                            progressRemaining: nil
+                        ),
+                        for: selectedSnapshot.id
+                    )
+                } else {
+                    setTask(
+                        DriveTask(
+                            deviceIdentifier: selectedSnapshot.id,
+                            kind: .selfTest(kind),
+                            state: .running,
+                            title: "\(kind.title) started",
+                            detail: info.userMessage,
+                            startedAt: Date(),
+                            updatedAt: Date(),
+                            progressRemaining: nil
+                        ),
+                        for: selectedSnapshot.id
+                    )
+                }
                 if !selectedSnapshot.device.isInternal {
                     await refreshDevice(
                         identifier: selectedSnapshot.id,
@@ -212,10 +252,34 @@ final class AppModel {
                     )
                 }
             case let .failure(issue):
-                lastActionMessage = "\(issue.title): \(issue.message)"
+                recentTaskByDevice[selectedSnapshot.id] = DriveTask(
+                    deviceIdentifier: selectedSnapshot.id,
+                    kind: .selfTest(kind),
+                    state: .failed,
+                    title: issue.title,
+                    detail: issue.message,
+                    startedAt: Date(),
+                    updatedAt: Date(),
+                    progressRemaining: nil
+                )
+                currentTaskByDevice[selectedSnapshot.id] = nil
+                pendingSelfTestKindByDevice[selectedSnapshot.id] = nil
+                updateActivityFromTask(for: selectedSnapshot.id)
             }
         } catch {
-            lastActionMessage = error.localizedDescription
+            recentTaskByDevice[selectedSnapshot.id] = DriveTask(
+                deviceIdentifier: selectedSnapshot.id,
+                kind: .selfTest(kind),
+                state: .failed,
+                title: "Self-test failed to start",
+                detail: error.localizedDescription,
+                startedAt: Date(),
+                updatedAt: Date(),
+                progressRemaining: nil
+            )
+            currentTaskByDevice[selectedSnapshot.id] = nil
+            pendingSelfTestKindByDevice[selectedSnapshot.id] = nil
+            updateActivityFromTask(for: selectedSnapshot.id)
         }
     }
 
@@ -259,49 +323,84 @@ final class AppModel {
         snapshots[index].inspectionState = state
 
         if case let .loaded(inspection) = state {
-            updateActivityAfterLoadedState(
-                inspection: inspection,
+            handleLoadedInspection(
+                inspection,
+                previousInspection: previousInspection,
                 for: identifier,
                 device: snapshots[index].device
             )
-            handleSelfTestTransition(from: previousInspection, to: inspection)
             manageSelfTestRefresh(for: identifier, inspection: inspection)
             recordHistory(for: snapshots[index].device, inspection: inspection)
-        } else if case .unavailable = state, activity(for: identifier) == .refreshing {
-            setActivity(.idle, for: identifier)
+        } else if case let .unavailable(issue) = state {
+            handleUnavailableState(issue, for: identifier, device: snapshots[index].device)
         }
     }
 
-    private func handleSelfTestTransition(from previous: DeviceInspection?, to current: DeviceInspection) {
-        let previousStatus = previous?.selfTestStatusInfo
-        let currentStatus = current.selfTestStatusInfo
+    private func handleLoadedInspection(
+        _ inspection: DeviceInspection,
+        previousInspection: DeviceInspection?,
+        for identifier: String,
+        device: StorageDevice
+    ) {
+        let previousStatus = previousInspection?.selfTestStatusInfo
+        let currentStatus = inspection.selfTestStatusInfo
+        let pendingKind = pendingSelfTestKindByDevice[identifier]
+
+        if let currentStatus, currentStatus.isInProgress {
+            let taskKind = pendingKind.map(DriveTaskKind.selfTest) ?? inferredSelfTestKind(for: identifier)
+            setTask(
+                DriveTask(
+                    deviceIdentifier: identifier,
+                    kind: taskKind,
+                    state: .running,
+                    title: currentStatus.title,
+                    detail: currentStatus.detail,
+                    startedAt: currentTaskByDevice[identifier]?.startedAt ?? Date(),
+                    updatedAt: inspection.capturedAt,
+                    progressRemaining: currentStatus.progressRemaining
+                ),
+                for: identifier
+            )
+            return
+        }
 
         if previousStatus?.isInProgress == true, let currentStatus, currentStatus.isFinished {
-            lastActionMessage = currentStatus.kind == .passed
-                ? "Self-test completed without error."
-                : currentStatus.detail
+            completeSelfTestTask(
+                for: identifier,
+                kind: pendingKind ?? inferredSelfTestKind(for: identifier).selfTestKind ?? .short,
+                with: currentStatus,
+                at: inspection.capturedAt
+            )
+            return
         }
+
+        if let task = currentTaskByDevice[identifier],
+           task.state == .waitingForAdmin,
+           device.isInternal,
+           currentStatus == nil {
+            updateActivityFromTask(for: identifier)
+            return
+        }
+
+        if isRefreshTask(currentTaskByDevice[identifier]) {
+            currentTaskByDevice[identifier] = nil
+        }
+
+        updateActivityFromTask(for: identifier)
     }
 
     private func manageSelfTestRefresh(for identifier: String, inspection: DeviceInspection) {
         guard let status = inspection.selfTestStatusInfo, status.isInProgress else {
-            if activeSelfTestDeviceIdentifier == identifier {
-                selfTestRefreshTask?.cancel()
-                selfTestRefreshTask = nil
-                activeSelfTestDeviceIdentifier = nil
-            }
+            selfTestRefreshTasks[identifier]?.cancel()
+            selfTestRefreshTasks[identifier] = nil
             return
         }
 
-        setActivity(.selfTestRunning, for: identifier)
-
-        if activeSelfTestDeviceIdentifier == identifier, selfTestRefreshTask != nil {
+        if selfTestRefreshTasks[identifier] != nil {
             return
         }
 
-        selfTestRefreshTask?.cancel()
-        activeSelfTestDeviceIdentifier = identifier
-        selfTestRefreshTask = Task { [weak self] in
+        selfTestRefreshTasks[identifier] = Task { [weak self] in
             guard let self else { return }
 
             while !Task.isCancelled {
@@ -326,10 +425,7 @@ final class AppModel {
             }
 
             await MainActor.run {
-                if self.activeSelfTestDeviceIdentifier == identifier {
-                    self.selfTestRefreshTask = nil
-                    self.activeSelfTestDeviceIdentifier = nil
-                }
+                self.selfTestRefreshTasks[identifier] = nil
             }
         }
     }
@@ -354,22 +450,152 @@ final class AppModel {
         activityByDevice[identifier] = activity
     }
 
-    private func updateActivityAfterLoadedState(
-        inspection: DeviceInspection,
+    private func setTask(_ task: DriveTask, for identifier: String) {
+        currentTaskByDevice[identifier] = task
+        recentTaskByDevice[identifier] = nil
+        updateActivityFromTask(for: identifier)
+    }
+
+    private func setRefreshTask(for identifier: String, admin: Bool) {
+        let existingStart = currentTaskByDevice[identifier]?.startedAt ?? Date()
+        currentTaskByDevice[identifier] = DriveTask(
+            deviceIdentifier: identifier,
+            kind: .refresh(admin: admin),
+            state: .running,
+            title: admin ? "Refreshing with admin access" : "Refreshing drive status",
+            detail: admin ? "Reading detailed SMART data with administrator access." : "Reading SMART data and updating health details.",
+            startedAt: existingStart,
+            updatedAt: Date(),
+            progressRemaining: nil
+        )
+        updateActivityFromTask(for: identifier)
+    }
+
+    private func completeSelfTestTask(
+        for identifier: String,
+        kind: SmartSelfTestKind,
+        with status: SelfTestStatusInfo,
+        at date: Date
+    ) {
+        let state: DriveTaskState
+        switch status.kind {
+        case .passed:
+            state = .succeeded
+        case .failed, .aborted:
+            state = .failed
+        case .running, .unknown:
+            state = .succeeded
+        }
+
+        recentTaskByDevice[identifier] = DriveTask(
+            deviceIdentifier: identifier,
+            kind: .selfTest(kind),
+            state: state,
+            title: status.title,
+            detail: status.detail,
+            startedAt: currentTaskByDevice[identifier]?.startedAt ?? date,
+            updatedAt: date,
+            progressRemaining: nil
+        )
+        currentTaskByDevice[identifier] = nil
+        pendingSelfTestKindByDevice[identifier] = nil
+        updateActivityFromTask(for: identifier)
+    }
+
+    private func handleUnavailableState(
+        _ issue: UserFacingIssue,
         for identifier: String,
         device: StorageDevice
     ) {
-        if inspection.selfTestStatusInfo?.isInProgress == true {
-            setActivity(.selfTestRunning, for: identifier)
+        if issue.kind == .permissionRequired,
+           let task = currentTaskByDevice[identifier],
+           task.kind.isSelfTest,
+           device.isInternal {
+            var updatedTask = task
+            updatedTask.state = .waitingForAdmin
+            updatedTask.title = "\(task.kind.title) started"
+            updatedTask.detail = "Refresh as Admin to check progress or confirm the result on this drive."
+            updatedTask.updatedAt = Date()
+            updatedTask.progressRemaining = nil
+            currentTaskByDevice[identifier] = updatedTask
+            updateActivityFromTask(for: identifier)
             return
         }
 
-        if activity(for: identifier) == .awaitingAdminRefresh,
-           device.isInternal,
-           inspection.selfTestStatusInfo == nil {
+        if let task = currentTaskByDevice[identifier], isRefreshTask(task) {
+            recentTaskByDevice[identifier] = DriveTask(
+                deviceIdentifier: identifier,
+                kind: task.kind,
+                state: .failed,
+                title: task.kind.title,
+                detail: issue.message,
+                startedAt: task.startedAt,
+                updatedAt: Date(),
+                progressRemaining: nil
+            )
+            currentTaskByDevice[identifier] = nil
+        }
+
+        updateActivityFromTask(for: identifier)
+    }
+
+    private func updateActivityFromTask(for identifier: String) {
+        guard let task = currentTaskByDevice[identifier] else {
+            setActivity(.idle, for: identifier)
             return
         }
 
-        setActivity(.idle, for: identifier)
+        switch task.state {
+        case .running:
+            if task.kind.isSelfTest {
+                setActivity(.selfTestRunning, for: identifier)
+            } else {
+                setActivity(.refreshing, for: identifier)
+            }
+        case .waitingForAdmin:
+            setActivity(.awaitingAdminRefresh, for: identifier)
+        case .succeeded, .failed:
+            setActivity(.idle, for: identifier)
+        }
+    }
+
+    private func isRefreshTask(_ task: DriveTask?) -> Bool {
+        guard let task else {
+            return false
+        }
+        return isRefreshTask(task)
+    }
+
+    private func isRefreshTask(_ task: DriveTask) -> Bool {
+        if case .refresh = task.kind {
+            return true
+        }
+        return false
+    }
+
+    private func inferredSelfTestKind(for identifier: String) -> DriveTaskKind {
+        if let task = currentTaskByDevice[identifier]?.kind {
+            switch task {
+            case .selfTest:
+                return task
+            case .refresh:
+                break
+            }
+        }
+
+        if let kind = pendingSelfTestKindByDevice[identifier] {
+            return .selfTest(kind)
+        }
+
+        if let recentTask = recentTaskByDevice[identifier]?.kind {
+            switch recentTask {
+            case .selfTest:
+                return recentTask
+            case .refresh:
+                break
+            }
+        }
+
+        return .selfTest(.short)
     }
 }

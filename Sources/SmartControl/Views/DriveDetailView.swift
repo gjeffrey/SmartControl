@@ -11,6 +11,9 @@ struct DriveDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         heroCard(for: snapshot)
+                        if model.currentTask(for: snapshot.id) != nil || model.recentTask(for: snapshot.id) != nil {
+                            activityCard(for: snapshot)
+                        }
 
                         switch snapshot.inspectionState {
                         case .loading:
@@ -54,7 +57,6 @@ struct DriveDetailView: View {
     @ViewBuilder
     private func heroCard(for snapshot: DriveSnapshot) -> some View {
         let device = snapshot.device
-        let activity = model.activity(for: snapshot.id)
 
         SectionCard("") {
             VStack(alignment: .leading, spacing: 20) {
@@ -88,14 +90,7 @@ struct DriveDetailView: View {
                     }
                 }
 
-                if let message = model.lastActionMessage {
-                    Label(message, systemImage: "sparkle")
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                } else if activity == .awaitingAdminRefresh {
-                    Label("A self-test may be running. Use Refresh as Admin to check progress or confirm the result on this drive.", systemImage: "lock.fill")
-                        .foregroundStyle(.secondary)
-                } else if let error = model.lastRefreshError {
+                if let error = model.lastRefreshError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.secondary)
                 }
@@ -138,6 +133,66 @@ struct DriveDetailView: View {
                 return ("Setup Needed", .secondary)
             case .commandFailed:
                 return ("Read Failed", .red)
+            }
+        }
+    }
+
+    private func activityCard(for snapshot: DriveSnapshot) -> some View {
+        let task = model.currentTask(for: snapshot.id) ?? model.recentTask(for: snapshot.id)
+
+        return SectionCard(model.currentTask(for: snapshot.id) == nil ? "Recent Activity" : "Current Activity") {
+            if let task {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .center, spacing: 14) {
+                        Image(systemName: taskIcon(task))
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(taskColor(task))
+                            .frame(width: 40, height: 40)
+                            .background(taskColor(task).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(task.title)
+                                .font(.title3.weight(.semibold))
+                            Text(task.detail)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Text(Formatters.refreshTime(task.updatedAt))
+                            .font(.footnote)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    if task.state == .running, let remaining = task.progressRemaining {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView(value: Double(100 - remaining), total: 100)
+                                .tint(taskColor(task))
+                            Text("About \(remaining)% of the test remains. SmartControl will check again automatically.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if task.state == .waitingForAdmin {
+                        HStack(spacing: 12) {
+                            Button {
+                                Task { await model.refreshSelection(forcePrivilegePrompt: true) }
+                            } label: {
+                                Label("Check Progress as Admin", systemImage: "lock.open")
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Text("Internal drives often need administrator access before macOS will reveal self-test progress or results.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if task.state == .succeeded {
+                        Label("The most recent task finished successfully.", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    } else if task.state == .failed {
+                        Label("The most recent task needs review.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -260,9 +315,36 @@ struct DriveDetailView: View {
         }
     }
 
+    private func taskIcon(_ task: DriveTask) -> String {
+        switch task.state {
+        case .running:
+            return task.kind.isSelfTest ? "hourglass" : "arrow.clockwise"
+        case .waitingForAdmin:
+            return "lock.fill"
+        case .succeeded:
+            return "checkmark.seal.fill"
+        case .failed:
+            return "xmark.octagon.fill"
+        }
+    }
+
+    private func taskColor(_ task: DriveTask) -> Color {
+        switch task.state {
+        case .running:
+            return task.kind.isSelfTest ? .blue : .secondary
+        case .waitingForAdmin:
+            return .orange
+        case .succeeded:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
     private func actionCard(for inspection: DeviceInspection) -> some View {
-        let selfTestRunning = inspection.selfTestStatusInfo?.isInProgress == true
-        let awaitingAdminRefresh = model.selectedSnapshot.map { model.activity(for: $0.id) == .awaitingAdminRefresh } ?? false
+        let currentTask = model.selectedSnapshot.flatMap { model.currentTask(for: $0.id) }
+        let selfTestRunning = inspection.selfTestStatusInfo?.isInProgress == true || (currentTask?.kind.isSelfTest == true && currentTask?.state == .running)
+        let awaitingAdminRefresh = currentTask?.state == .waitingForAdmin
 
         return SectionCard("Actions") {
             VStack(alignment: .leading, spacing: 16) {

@@ -7,7 +7,11 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $model.selection) {
             ForEach(model.filteredSnapshots) { snapshot in
-                SidebarRow(snapshot: snapshot, activity: model.activity(for: snapshot.id))
+                SidebarRow(
+                    snapshot: snapshot,
+                    activity: model.activity(for: snapshot.id),
+                    task: model.currentTask(for: snapshot.id)
+                )
                     .tag(snapshot.id)
             }
         }
@@ -28,6 +32,7 @@ struct SidebarView: View {
 private struct SidebarRow: View {
     let snapshot: DriveSnapshot
     let activity: DriveActivity
+    let task: DriveTask?
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -46,7 +51,7 @@ private struct SidebarRow: View {
                     activityIndicator
                 }
 
-                Text(snapshot.device.subtitle)
+                Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -86,6 +91,21 @@ private struct SidebarRow: View {
 
     private var activityTitle: String {
         activity == .idle ? statusTitle : activity.title
+    }
+
+    private var subtitle: String {
+        guard let task else {
+            return snapshot.device.subtitle
+        }
+
+        switch task.state {
+        case .running:
+            return task.title
+        case .waitingForAdmin:
+            return "Needs admin to check progress"
+        case .succeeded, .failed:
+            return snapshot.device.subtitle
+        }
     }
 
     private var statusTitle: String {
