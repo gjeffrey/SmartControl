@@ -144,6 +144,9 @@ struct DriveDetailView: View {
 
         return SectionCard(model.currentTask(for: snapshot.id) == nil ? "Recent Activity" : "Current Activity") {
             if let task {
+                if task.state == .running, case .refresh = task.kind {
+                    refreshActivityView(task: task)
+                } else {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .center, spacing: 14) {
                         Image(systemName: taskIcon(task))
@@ -195,7 +198,39 @@ struct DriveDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                }
             }
+        }
+    }
+
+    private func refreshActivityView(task: DriveTask) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .frame(width: 40, height: 40)
+                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Refreshing SMART data")
+                        .font(.title3.weight(.semibold))
+                    Text("Polling telemetry, health flags, and event state.")
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(Formatters.refreshTime(task.updatedAt))
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            RefreshScanView()
+
+            Text("SYNCING • SMARTCTL • HEALTH MODEL • EVENT PIPELINE")
+                .font(.system(.caption, design: .monospaced).weight(.medium))
+                .foregroundStyle(.green.opacity(0.72))
         }
     }
 
@@ -462,6 +497,23 @@ struct DriveDetailView: View {
         }
     }
 
+    private func recommendationIcon(_ recommendation: String) -> String {
+        let lower = recommendation.lowercased()
+        if lower.contains("back up") || lower.contains("replace") {
+            return "exclamationmark.triangle.fill"
+        }
+        if lower.contains("review") || lower.contains("refresh") || lower.contains("check") {
+            return "arrow.clockwise.circle"
+        }
+        if lower.contains("monitor") || lower.contains("watch") || lower.contains("keep an eye") {
+            return "eye.circle"
+        }
+        if lower.contains("no immediate action") {
+            return "checkmark.circle"
+        }
+        return "arrow.forward.circle"
+    }
+
     private func actionCard(for snapshot: DriveSnapshot, inspection: DeviceInspection) -> some View {
         let currentTask = model.selectedSnapshot.flatMap { model.currentTask(for: $0.id) }
         let selfTestRunning = model.shouldTreatSelfTestStatusAsLive(for: snapshot) || (currentTask?.kind.isSelfTest == true && currentTask?.state == .running)
@@ -507,8 +559,11 @@ struct DriveDetailView: View {
 
                 Divider()
 
+                Text("What To Do Next")
+                    .font(.headline)
+
                 ForEach(inspection.recommendations, id: \.self) { recommendation in
-                    Label(recommendation, systemImage: "arrow.forward.circle")
+                    Label(recommendation, systemImage: recommendationIcon(recommendation))
                         .font(.body)
                 }
 
@@ -939,6 +994,42 @@ struct InstallCommandRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct RefreshScanView: View {
+    @State private var animate = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+                    .frame(height: 12)
+
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.green.opacity(0.08),
+                                Color.green.opacity(0.88),
+                                Color.green.opacity(0.08),
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: 120, height: 12)
+                    .blur(radius: 0.4)
+                    .offset(x: animate ? max(proxy.size.width - 120, 0) : 0)
+                    .animation(.linear(duration: 1.3).repeatForever(autoreverses: false), value: animate)
+            }
+            .drawingGroup()
+        }
+        .frame(height: 12)
+        .onAppear {
+            animate = true
+        }
     }
 }
 

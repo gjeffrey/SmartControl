@@ -369,6 +369,19 @@ struct MonitoringEvent: Codable, Hashable, Identifiable {
     }
 }
 
+struct AttentionItem: Identifiable, Hashable {
+    let deviceIdentifier: String
+    let deviceName: String
+    let title: String
+    let detail: String
+    let severity: MonitoringEventSeverity
+    let createdAt: Date
+
+    var id: String {
+        "\(deviceIdentifier)-\(title)-\(createdAt.timeIntervalSince1970)"
+    }
+}
+
 enum MonitoringCadence: Int, CaseIterable, Hashable, Identifiable {
     case off = 0
     case every30Minutes = 30

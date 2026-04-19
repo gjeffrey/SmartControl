@@ -66,6 +66,63 @@ final class AppModel {
         return snapshots.first(where: { $0.id == selection })
     }
 
+    var attentionItems: [AttentionItem] {
+        var items: [AttentionItem] = []
+
+        for snapshot in snapshots {
+            if case let .loaded(inspection) = snapshot.inspectionState,
+               inspection.health == .caution || inspection.health == .critical {
+                items.append(
+                    AttentionItem(
+                        deviceIdentifier: snapshot.id,
+                        deviceName: snapshot.device.displayName,
+                        title: inspection.health == .critical ? "Urgent drive health issue" : "Drive needs attention",
+                        detail: inspection.reasons.first ?? inspection.headline,
+                        severity: inspection.health == .critical ? .critical : .warning,
+                        createdAt: inspection.capturedAt
+                    )
+                )
+            }
+        }
+
+        for (deviceIdentifier, events) in eventsByDevice {
+            guard let snapshot = snapshots.first(where: { $0.id == deviceIdentifier }) else {
+                continue
+            }
+
+            for event in events.suffix(3) where event.severity != .info {
+                items.append(
+                    AttentionItem(
+                        deviceIdentifier: deviceIdentifier,
+                        deviceName: snapshot.device.displayName,
+                        title: event.title,
+                        detail: event.detail,
+                        severity: event.severity,
+                        createdAt: event.createdAt
+                    )
+                )
+            }
+        }
+
+        let sorted = items.sorted { lhs, rhs in
+            let severityRank: [MonitoringEventSeverity: Int] = [.critical: 2, .warning: 1, .info: 0]
+            let left = severityRank[lhs.severity] ?? 0
+            let right = severityRank[rhs.severity] ?? 0
+            if left != right {
+                return left > right
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+
+        var seenKeys = Set<String>()
+        return sorted.filter { item in
+            let key = "\(item.deviceIdentifier)-\(item.title)"
+            return seenKeys.insert(key).inserted
+        }
+        .prefix(6)
+        .map { $0 }
+    }
+
     func activity(for deviceIdentifier: String) -> DriveActivity {
         activityByDevice[deviceIdentifier] ?? .idle
     }
@@ -117,7 +174,13 @@ final class AppModel {
 
         do {
             let devices = try await diskDiscovery.discoverDevices()
-            snapshots = devices.map { DriveSnapshot(device: $0, inspectionState: .loading) }
+            let previousStates = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, $0.inspectionState) })
+            snapshots = devices.map { device in
+                DriveSnapshot(
+                    device: device,
+                    inspectionState: previousStates[device.id] ?? .loading
+                )
+            }
             for device in devices {
                 setRefreshTask(
                     for: device.id,
@@ -193,7 +256,6 @@ final class AppModel {
         do {
             let usingAdmin = forcePrivilegePrompt || (respectAdminPreference && preferAdministratorAccess)
             setRefreshTask(for: snapshot.id, admin: usingAdmin)
-            updateInspectionState(.loading, for: snapshot.id)
             let state = try await smartctl.inspect(
                 device: snapshot.device,
                 preferredPath: smartctlPathOverride,
