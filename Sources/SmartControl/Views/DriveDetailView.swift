@@ -285,6 +285,7 @@ struct DriveDetailView: View {
                             Text(metric.label.uppercased())
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.tertiary)
+                                .contextualHelp(TermGlossary.metric(metric.label))
                             Text(metric.value)
                                 .font(.title3.weight(.semibold))
                             if let detail = metric.detail {
@@ -385,6 +386,7 @@ struct DriveDetailView: View {
             Text(label.uppercased())
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
+                .contextualHelp(TermGlossary.context(label))
             Text(value)
                 .font(.title3.weight(.semibold))
         }
@@ -780,10 +782,13 @@ struct DriveDetailView: View {
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(device.partitions) { partition in
+                        let title = partitionDisplayTitle(partition)
+
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(partitionDisplayTitle(partition))
+                                Text(title)
                                     .font(.headline)
+                                    .contextualHelp(TermGlossary.partition(title: title, contentType: partition.contentType))
                                 Text(partitionDisplaySubtitle(partition))
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
@@ -850,6 +855,10 @@ struct DriveDetailView: View {
 
         return SectionCard("SMART Attributes") {
             VStack(alignment: .leading, spacing: 16) {
+                Text("Hover a term if it sounds like something firmware engineers named before lunch.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 if importantAttributes.isEmpty {
                     Text("This drive mostly reports vendor-specific SMART attributes. Most users can ignore those unless they are troubleshooting with the drive vendor.")
                         .foregroundStyle(.secondary)
@@ -875,20 +884,23 @@ struct DriveDetailView: View {
     private func attributeTable(attributes: [DeviceInspection.Attribute]) -> some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
             GridRow {
-                Text("Name").font(.headline)
-                Text("Current").font(.headline)
-                Text("Worst").font(.headline)
-                Text("Threshold").font(.headline)
-                Text("Raw").font(.headline)
+                Text("Name").font(.headline).contextualHelp(TermGlossary.attributeColumn("Name"))
+                Text("Current").font(.headline).contextualHelp(TermGlossary.attributeColumn("Current"))
+                Text("Worst").font(.headline).contextualHelp(TermGlossary.attributeColumn("Worst"))
+                Text("Threshold").font(.headline).contextualHelp(TermGlossary.attributeColumn("Threshold"))
+                Text("Raw").font(.headline).contextualHelp(TermGlossary.attributeColumn("Raw"))
             }
 
             Divider()
 
             ForEach(attributes) { attribute in
                 GridRow(alignment: .top) {
+                    let readableName = readableAttributeName(attribute.name)
+
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(readableAttributeName(attribute.name))
+                        Text(readableName)
                             .font(.body.weight(.medium))
+                            .contextualHelp(TermGlossary.attribute(readableName))
                         if let status = attribute.status {
                             Text(status)
                                 .font(.caption)
@@ -1041,6 +1053,7 @@ private struct SectionCard<Content: View>: View {
                 Text(title)
                     .font(.headline)
                     .foregroundStyle(.secondary)
+                    .contextualHelp(TermGlossary.section(title))
             }
 
             content

@@ -22,6 +22,7 @@ If SmartControl cannot find `smartctl` automatically, open Settings in the app a
 - Shows real physical disks in a native macOS sidebar
 - Uses `smartctl --json` so the UI is based on structured data, not terminal scraping
 - Highlights health state, temperature, endurance, power-on time, and other key metrics
+- Adds brief hover help for unfamiliar storage terms so the app can teach without turning into a manual
 - Explains why a drive is healthy, needs attention, or is critical
 - Surfaces recommended actions and SMART messages
 - Lets you start short and extended SMART self-tests
@@ -70,11 +71,13 @@ You can override either at package time:
 APP_VERSION=0.2.0 BUILD_NUMBER=2 ./script/build_and_run.sh --package
 ```
 
+A GitHub Actions release workflow is included at [release.yml](/Users/gabrieljeffrey/GitHub/Codex/SmartControl/.github/workflows/release.yml). The fuller release/signing/notarization guide is at [docs/releasing.md](/Users/gabrieljeffrey/GitHub/Codex/SmartControl/docs/releasing.md).
+
 ## Distribution Notes
 
 - Current release artifacts are ad-hoc signed for local distribution and testing.
 - They are not yet notarized.
-- For public GitHub Releases, the next step is replacing ad-hoc signing with Developer ID signing and notarization.
+- For public GitHub Releases, the repo now includes the workflow and scripts needed to move to Developer ID signing and notarization once Apple credentials are configured.
 - Sparkle auto-update is a good fit later, once GitHub release artifacts and signing are stable.
 
 ## Notes

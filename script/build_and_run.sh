@@ -21,6 +21,12 @@ VERSION_FILE="$ROOT_DIR/VERSION"
 BUILD_FILE="$ROOT_DIR/BUILD_NUMBER"
 APP_VERSION="${APP_VERSION:-$(tr -d '[:space:]' < "$VERSION_FILE")}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(tr -d '[:space:]' < "$BUILD_FILE")}"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-}"
+ENABLE_HARDENED_RUNTIME="${ENABLE_HARDENED_RUNTIME:-1}"
+NOTARIZE="${NOTARIZE:-0}"
+APPLE_ID="${APPLE_ID:-}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
+APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-}"
 
 build_binary() {
   python3 "$ROOT_DIR/script/generate_app_icon.py"
@@ -61,6 +67,57 @@ write_info_plist() {
 PLIST
 }
 
+sign_app_bundle() {
+  if [[ -n "$SIGNING_IDENTITY" ]]; then
+    local args=(
+      --force
+      --deep
+      --sign "$SIGNING_IDENTITY"
+    )
+
+    if [[ "$ENABLE_HARDENED_RUNTIME" == "1" ]]; then
+      args+=(--options runtime)
+    fi
+
+    /usr/bin/codesign "${args[@]}" "$APP_BUNDLE"
+  else
+    /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE"
+  fi
+}
+
+notarization_requested() {
+  [[ "$NOTARIZE" == "1" ]]
+}
+
+require_notarization_credentials() {
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    echo "NOTARIZE=1 requires SIGNING_IDENTITY to be set to a Developer ID Application certificate." >&2
+    exit 1
+  fi
+
+  if [[ -z "$APPLE_ID" || -z "$APPLE_TEAM_ID" || -z "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+    echo "NOTARIZE=1 requires APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD." >&2
+    exit 1
+  fi
+}
+
+notarize_artifact() {
+  local artifact_path="$1"
+  require_notarization_credentials
+
+  xcrun notarytool submit \
+    "$artifact_path" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --wait
+}
+
+staple_artifact() {
+  local artifact_path="$1"
+  xcrun stapler staple "$artifact_path" >/dev/null
+}
+
 create_app_bundle() {
   local build_bin_path
   build_bin_path="$(build_binary)"
@@ -73,7 +130,7 @@ create_app_bundle() {
 
   /usr/bin/iconutil -c icns "$ICONSET_DIR" -o "$ICON_FILE"
   write_info_plist
-  /usr/bin/codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE"
+  sign_app_bundle
 }
 
 open_app() {
@@ -91,9 +148,9 @@ write_release_notes_template() {
 
 ## Notes
 
-- Ad-hoc signed for local distribution and testing
-- Not notarized yet
-- Planned GitHub Releases / Sparkle distribution path
+- Signing: ${SIGNING_IDENTITY:-ad-hoc}
+- Notarized: $(notarization_requested && printf 'yes' || printf 'no')
+- GitHub Releases artifact set produced by \`./script/build_and_run.sh --package\`
 EOF
 }
 
@@ -112,8 +169,8 @@ write_release_manifest() {
     "dmg": "$dmg_name"
   },
   "distributionNotes": {
-    "signing": "ad-hoc",
-    "notarized": false,
+    "signing": "${SIGNING_IDENTITY:-ad-hoc}",
+    "notarized": $(notarization_requested && printf 'true' || printf 'false'),
     "sparkleReady": false
   }
 }
@@ -135,6 +192,13 @@ package_release() {
 
   /usr/bin/ditto -c -k --keepParent "$APP_BUNDLE" "$zip_path"
 
+  if notarization_requested; then
+    notarize_artifact "$zip_path"
+    staple_artifact "$APP_BUNDLE"
+    rm -f "$zip_path"
+    /usr/bin/ditto -c -k --keepParent "$APP_BUNDLE" "$zip_path"
+  fi
+
   stage_dir="$(mktemp -d)"
   cp -R "$APP_BUNDLE" "$stage_dir/$APP_NAME.app"
   ln -s /Applications "$stage_dir/Applications"
@@ -144,6 +208,11 @@ package_release() {
     -format UDZO \
     "$dmg_path" >/dev/null
   rm -rf "$stage_dir"
+
+  if notarization_requested; then
+    notarize_artifact "$dmg_path"
+    staple_artifact "$dmg_path"
+  fi
 
   /usr/bin/shasum -a 256 "$zip_path" > "$zip_path.sha256"
   /usr/bin/shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
