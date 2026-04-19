@@ -7,6 +7,8 @@ struct StorageDevice: Identifiable, Hashable {
         let mountPoint: String?
         let sizeBytes: Int64?
         let contentType: String?
+        let fileSystemName: String?
+        let availableBytes: Int64?
 
         var id: String { identifier }
     }
@@ -29,6 +31,7 @@ struct StorageDevice: Identifiable, Hashable {
     let isSolidState: Bool
     let isRemovable: Bool
     let isEjectable: Bool
+    let isWritable: Bool?
     let smartStatus: String?
     let partitions: [Partition]
     let fallbackMetrics: FallbackMetrics?
@@ -47,6 +50,18 @@ struct StorageDevice: Identifiable, Hashable {
         let placement = isInternal ? "Internal" : "External"
         let medium = isSolidState ? "SSD" : "Drive"
         return [placement, medium, busProtocol].filter { !$0.isEmpty }.joined(separator: " • ")
+    }
+
+    var mountedPartitions: [Partition] {
+        partitions.filter { $0.mountPoint != nil }
+    }
+
+    var totalAvailableBytesOnMountedVolumes: Int64? {
+        let values = mountedPartitions.compactMap(\.availableBytes)
+        guard !values.isEmpty else {
+            return nil
+        }
+        return values.reduce(0, +)
     }
 }
 
@@ -228,6 +243,7 @@ struct DeviceInspection: Hashable {
 
 struct SelfTestStatusInfo: Hashable {
     enum Kind: Hashable {
+        case idle
         case running
         case passed
         case failed
@@ -264,7 +280,16 @@ extension SelfTestStatusInfo {
         let lower = rawStatus.lowercased()
         let progressRemaining = Self.extractPercentage(from: lower)
 
-        if lower.contains("in progress") || lower.contains("remaining") {
+        if lower.contains("no self-test in progress")
+            || lower.contains("self test routine in idle mode")
+            || lower == "idle" {
+            self.init(
+                kind: .idle,
+                title: "No self-test in progress",
+                detail: rawStatus,
+                progressRemaining: nil
+            )
+        } else if lower.contains("in progress") || lower.contains("remaining") {
             self.init(
                 kind: .running,
                 title: "Self-test in progress",

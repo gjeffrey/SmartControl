@@ -28,6 +28,7 @@ struct DriveDetailView: View {
                             changeSummaryCard(for: snapshot.device, inspection: inspection)
                             recentEventsCard(for: snapshot.device)
                             metricsCard(for: snapshot, inspection: inspection)
+                            systemContextCard(for: snapshot.device)
                             actionCard(for: snapshot, inspection: inspection)
                             historyCard(for: inspection, device: snapshot.device)
                             volumesCard(for: snapshot.device)
@@ -206,11 +207,11 @@ struct DriveDetailView: View {
     private func refreshActivityView(task: DriveTask) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "terminal.fill")
+                Image(systemName: "arrow.clockwise.circle.fill")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.secondary)
                     .frame(width: 40, height: 40)
-                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Refreshing SMART data")
@@ -226,11 +227,8 @@ struct DriveDetailView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            RefreshScanView()
-
-            Text("SYNCING • SMARTCTL • HEALTH MODEL • EVENT PIPELINE")
-                .font(.system(.caption, design: .monospaced).weight(.medium))
-                .foregroundStyle(.green.opacity(0.72))
+            ProgressView()
+                .controlSize(.small)
         }
     }
 
@@ -248,7 +246,8 @@ struct DriveDetailView: View {
     }
 
     private func shouldShowSelfTestCard(for snapshot: DriveSnapshot, inspection: DeviceInspection) -> Bool {
-        guard inspection.selfTestStatusInfo != nil else {
+        guard let status = inspection.selfTestStatusInfo,
+              status.kind != .idle else {
             return false
         }
 
@@ -368,6 +367,32 @@ struct DriveDetailView: View {
         }
     }
 
+    private func systemContextCard(for device: StorageDevice) -> some View {
+        SectionCard("Connection & macOS Context") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 16)], spacing: 16) {
+                contextMetric("Bus", device.busProtocol.isEmpty ? "Unavailable" : device.busProtocol)
+                contextMetric("Writable", device.isWritable == nil ? "Unknown" : (device.isWritable == true ? "Yes" : "Read-only"))
+                contextMetric("Mounted Volumes", "\(device.mountedPartitions.count)")
+                contextMetric("Free On Mounted Volumes", Formatters.capacity(device.totalAvailableBytesOnMountedVolumes))
+                contextMetric("Removable", device.isRemovable ? "Yes" : "No")
+                contextMetric("Ejectable", device.isEjectable ? "Yes" : "No")
+            }
+        }
+    }
+
+    private func contextMetric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
     private func selfTestCard(for inspection: DeviceInspection) -> some View {
         let status = inspection.selfTestStatusInfo
 
@@ -417,6 +442,8 @@ struct DriveDetailView: View {
 
     private func selfTestIcon(_ status: SelfTestStatusInfo) -> String {
         switch status.kind {
+        case .idle:
+            return "minus.circle.fill"
         case .running:
             return "hourglass"
         case .passed:
@@ -432,6 +459,8 @@ struct DriveDetailView: View {
 
     private func selfTestColor(_ status: SelfTestStatusInfo) -> Color {
         switch status.kind {
+        case .idle:
+            return .secondary
         case .running:
             return .blue
         case .passed:
@@ -994,42 +1023,6 @@ struct InstallCommandRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-}
-
-private struct RefreshScanView: View {
-    @State private var animate = false
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.primary.opacity(0.06))
-                    .frame(height: 12)
-
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.green.opacity(0.08),
-                                Color.green.opacity(0.88),
-                                Color.green.opacity(0.08),
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: 120, height: 12)
-                    .blur(radius: 0.4)
-                    .offset(x: animate ? max(proxy.size.width - 120, 0) : 0)
-                    .animation(.linear(duration: 1.3).repeatForever(autoreverses: false), value: animate)
-            }
-            .drawingGroup()
-        }
-        .frame(height: 12)
-        .onAppear {
-            animate = true
-        }
     }
 }
 

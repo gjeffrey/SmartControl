@@ -7,6 +7,14 @@ struct SidebarView: View {
     var body: some View {
         List {
             Section {
+                AttentionHomeRow(isSelected: model.isShowingAttentionCenter)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        model.showAttentionCenter()
+                    }
+            }
+
+            Section {
                 ForEach(model.filteredSnapshots) { snapshot in
                     SidebarRow(
                         snapshot: snapshot,
@@ -196,6 +204,32 @@ private struct AttentionRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear)
+        )
+    }
+}
+
+private struct AttentionHomeRow: View {
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "scope")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Attention Center")
+                    .font(.subheadline.weight(.semibold))
+                Text("Overview and recent events")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)

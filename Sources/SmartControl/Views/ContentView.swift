@@ -9,7 +9,11 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(model: model)
         } detail: {
-            DriveDetailView(model: model)
+            if model.isShowingAttentionCenter {
+                AttentionCenterView(model: model)
+            } else {
+                DriveDetailView(model: model)
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .searchable(text: $model.searchText, prompt: "Search drives")
@@ -30,6 +34,12 @@ struct ContentView: View {
                 .help("Refresh using administrator access")
 
                 Menu {
+                    Button("Export Diagnostics") {
+                        Task { await model.exportDiagnostics() }
+                    }
+
+                    Divider()
+
                     Button("Run Short Self-Test") {
                         Task { await model.runSelfTest(.short) }
                     }

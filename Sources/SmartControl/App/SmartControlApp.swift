@@ -30,6 +30,13 @@ struct SmartControlApp: App {
             }
 
             CommandMenu("SMART") {
+                Button("Export Diagnostics") {
+                    Task { await model.exportDiagnostics() }
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+
+                Divider()
+
                 Button("Run Short Self-Test") {
                     Task { await model.runSelfTest(.short) }
                 }

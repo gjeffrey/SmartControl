@@ -50,6 +50,7 @@ struct DiskDiscoveryService {
                 isSolidState: (info["SolidState"] as? Bool) ?? false,
                 isRemovable: (info["Removable"] as? Bool) ?? false,
                 isEjectable: (info["Ejectable"] as? Bool) ?? false,
+                isWritable: info["Writable"] as? Bool,
                 smartStatus: info["SMARTStatus"] as? String,
                 partitions: partitionsByDisk[identifier] ?? [],
                 fallbackMetrics: fallbackMetrics
@@ -75,24 +76,31 @@ struct DiskDiscoveryService {
 
     private func buildPartitionMap(from root: [String: Any]) -> [String: [StorageDevice.Partition]] {
         let items = (root["AllDisksAndPartitions"] as? [[String: Any]]) ?? []
+        var result: [String: [StorageDevice.Partition]] = [:]
 
-        return Dictionary(uniqueKeysWithValues: items.compactMap { item in
+        for item in items {
             guard let identifier = item["DeviceIdentifier"] as? String else {
-                return nil
+                continue
             }
 
-            let partitions = ((item["Partitions"] as? [[String: Any]]) ?? []).map { partition in
-                StorageDevice.Partition(
+            let rawPartitions = (item["Partitions"] as? [[String: Any]]) ?? []
+            let partitions: [StorageDevice.Partition] = rawPartitions.map { partition in
+                let mountPoint = partition["MountPoint"] as? String
+                return StorageDevice.Partition(
                     identifier: (partition["DeviceIdentifier"] as? String) ?? UUID().uuidString,
                     name: (partition["VolumeName"] as? String) ?? "",
-                    mountPoint: partition["MountPoint"] as? String,
+                    mountPoint: mountPoint,
                     sizeBytes: asInt64(partition["Size"]),
-                    contentType: partition["Content"] as? String
+                    contentType: partition["Content"] as? String,
+                    fileSystemName: partition["FilesystemName"] as? String,
+                    availableBytes: mountPoint.flatMap { fileSystemFreeBytes(at: $0) }
                 )
             }
 
-            return (identifier, partitions)
-        })
+            result[identifier] = partitions
+        }
+
+        return result
     }
 
     private func fallbackMetrics(from dictionary: [String: Any]?, smartStatus: String?) -> StorageDevice.FallbackMetrics? {
@@ -143,6 +151,19 @@ struct DiskDiscoveryService {
             return Int(value)
         case let value as NSNumber:
             return value.intValue
+        default:
+            return nil
+        }
+    }
+
+    private func fileSystemFreeBytes(at path: String) -> Int64? {
+        guard let attributes = try? FileManager.default.attributesOfFileSystem(forPath: path) else {
+            return nil
+        }
+
+        switch attributes[.systemFreeSize] {
+        case let number as NSNumber:
+            return number.int64Value
         default:
             return nil
         }

@@ -11,6 +11,11 @@ struct SmartctlService {
         "/usr/local/bin/smartctl",
         "/usr/bin/smartctl",
     ]
+    private let usbDeviceTypeCandidates = [
+        "sat",
+        "sat,auto",
+        "scsi",
+    ]
 
     func inspect(
         device: StorageDevice,
@@ -28,22 +33,21 @@ struct SmartctlService {
             )
         }
 
-        let arguments = ["--all", "--json", device.deviceNode]
-        let command = ([executable] + arguments).joined(separator: " ")
-        let result = try await runner.run(
+        let invocation = try await runSmartctlWithFallback(
             executable: executable,
-            arguments: arguments,
+            device: device,
+            arguments: ["--all", "--json"],
             privilegeMode: useAdministratorPrompt
                 ? .administratorPrompt(prompt: "SmartControl needs administrator access to read detailed SMART data for \(device.displayName).")
                 : .standard
         )
-
-        let combinedOutput = [result.stdout, result.stderr].joined(separator: "\n")
+        let command = ([executable] + invocation.arguments + [device.deviceNode]).joined(separator: " ")
+        let combinedOutput = [invocation.result.stdout, invocation.result.stderr].joined(separator: "\n")
         return inspectionState(
             for: device,
             executable: executable,
             commandDescription: command,
-            output: result.stdout.isEmpty ? result.stderr : result.stdout,
+            output: invocation.result.stdout.isEmpty ? invocation.result.stderr : invocation.result.stdout,
             combinedOutput: combinedOutput
         )
     }
@@ -121,14 +125,15 @@ struct SmartctlService {
             )
         }
 
-        let result = try await runner.run(
+        let invocation = try await runSmartctlWithFallback(
             executable: executable,
-            arguments: ["-t", kind.smartctlArgument, device.deviceNode],
+            device: device,
+            arguments: ["-t", kind.smartctlArgument],
             privilegeMode: useAdministratorPrompt
                 ? .administratorPrompt(prompt: "SmartControl needs administrator access to start a SMART self-test on \(device.displayName).")
                 : .standard
         )
-        let combined = [result.stdout, result.stderr]
+        let combined = [invocation.result.stdout, invocation.result.stderr]
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -143,18 +148,135 @@ struct SmartctlService {
             )
         }
 
-        if result.exitCode != 0 && combined.isEmpty {
+        if invocation.result.exitCode != 0 && combined.isEmpty {
             return .failure(
                 UserFacingIssue(
                     kind: .commandFailed,
                     title: "Self-Test Failed to Start",
-                    message: "smartctl exited with status \(result.exitCode).",
+                    message: "smartctl exited with status \(invocation.result.exitCode).",
                     recoverySuggestion: "Try again with administrator access."
                 )
             )
         }
 
+        if invocation.result.exitCode != 0 {
+            return .failure(classifySelfTestFailure(output: combined, device: device))
+        }
+
         return .success(SelfTestLaunchInfo(userMessage: summarizeSelfTestLaunch(kind: kind, output: combined, device: device)))
+    }
+
+    private func runSmartctlWithFallback(
+        executable: String,
+        device: StorageDevice,
+        arguments: [String],
+        privilegeMode: CommandRunner.PrivilegeMode
+    ) async throws -> (arguments: [String], result: CommandResult) {
+        let candidates = argumentCandidates(for: device, baseArguments: arguments)
+        var lastFailure: (arguments: [String], result: CommandResult)?
+
+        for candidate in candidates {
+            let result = try await runner.run(
+                executable: executable,
+                arguments: candidate,
+                privilegeMode: privilegeMode
+            )
+
+            let combined = [result.stdout, result.stderr].joined(separator: "\n")
+            if shouldTreatAsSuccessfulProbe(result: result, output: combined) {
+                return (candidate.dropLast().map { $0 }, result)
+            }
+
+            lastFailure = (candidate.dropLast().map { $0 }, result)
+        }
+
+        if let lastFailure {
+            return lastFailure
+        }
+
+        let fallbackArguments = arguments + [device.deviceNode]
+        let result = try await runner.run(
+            executable: executable,
+            arguments: fallbackArguments,
+            privilegeMode: privilegeMode
+        )
+        return (arguments, result)
+    }
+
+    private func argumentCandidates(for device: StorageDevice, baseArguments: [String]) -> [[String]] {
+        var candidates: [[String]] = [
+            baseArguments + [device.deviceNode]
+        ]
+
+        if device.busProtocol.lowercased().contains("usb") {
+            candidates.append(contentsOf: usbDeviceTypeCandidates.map { deviceType in
+                baseArguments + ["-d", deviceType, device.deviceNode]
+            })
+        }
+
+        return candidates
+    }
+
+    private func shouldTreatAsSuccessfulProbe(result: CommandResult, output: String) -> Bool {
+        if result.exitCode == 0 {
+            return true
+        }
+
+        let lower = output.lowercased()
+        if isPermissionIssue(output) {
+            return true
+        }
+
+        if lower.contains("unknown usb bridge")
+            || lower.contains("specify device type")
+            || lower.contains("please specify device type")
+            || lower.contains("unsupported usb bridge")
+            || lower.contains("no sat passthrough")
+            || lower.contains("badly formed scsi parameters") {
+            return false
+        }
+
+        return false
+    }
+
+    private func classifySelfTestFailure(output: String, device: StorageDevice) -> UserFacingIssue {
+        let lower = output.lowercased()
+
+        if lower.contains("smart command failed")
+            || lower.contains("unsupported scsi opcode")
+            || lower.contains("operation not supported")
+            || lower.contains("self-test not supported") {
+            return UserFacingIssue(
+                kind: .commandFailed,
+                title: "This Drive Cannot Run SMART Self-Tests",
+                message: "The drive or enclosure reported that SMART self-tests are not supported here.",
+                recoverySuggestion: device.busProtocol.lowercased().contains("usb")
+                    ? "This is common with USB bridge chips and some portable SSDs. Health reads may still work even when self-tests do not."
+                    : "This device may expose SMART health data without exposing self-test controls."
+            )
+        }
+
+        if lower.contains("unknown usb bridge")
+            || lower.contains("unsupported usb bridge")
+            || lower.contains("no sat passthrough")
+            || lower.contains("please specify device type")
+            || lower.contains("badly formed scsi parameters") {
+            return UserFacingIssue(
+                kind: .commandFailed,
+                title: "USB Bridge Does Not Pass This Test Through",
+                message: "SmartControl tried common USB SMART modes, but this enclosure still would not pass the self-test command through to the drive.",
+                recoverySuggestion: "Try a different enclosure, a direct SATA/NVMe connection, or vendor software if you need to run drive self-tests."
+            )
+        }
+
+        return UserFacingIssue(
+            kind: .commandFailed,
+            title: "Self-Test Failed to Start",
+            message: output.isEmpty ? "smartctl did not explain why the self-test could not start." : output,
+            recoverySuggestion: device.busProtocol.lowercased().contains("usb")
+                ? "Some USB drives expose SMART reads but not SMART self-tests."
+                : "Try refreshing the drive details, then retry the self-test."
+        )
     }
 
     private func resolvedSmartctlPath(preferredPath: String) -> String? {
@@ -373,46 +495,49 @@ struct SmartctlService {
         if let smartPassed, smartPassed == false {
             health = .critical
             reasons.append("SMART has already flagged this disk as failed.")
-            recommendations.append("Back up the disk immediately and plan a replacement.")
+            recommendations.append("Back up this drive now.")
+            recommendations.append("Replace the drive before trusting it again.")
         }
 
         if let temperatureC, temperatureC >= 60 {
             health = .critical
             reasons.append("Drive temperature is critically high at \(Int(temperatureC.rounded()))°C.")
-            recommendations.append("Reduce sustained load and check airflow or enclosure cooling.")
+            recommendations.append("Stop heavy writes until the drive cools down.")
+            recommendations.append("Check airflow, enclosure cooling, or cable/power issues.")
         } else if let temperatureC, temperatureC >= 55 {
             health = maxHealth(health, .caution)
             reasons.append("Drive temperature is elevated at \(Int(temperatureC.rounded()))°C.")
-            recommendations.append("Keep an eye on temperature during long writes and tests.")
+            recommendations.append("Watch temperature during long writes and self-tests.")
         } else if let temperatureC, temperatureC >= 50 {
             reasons.append("Drive temperature is warm at \(Int(temperatureC.rounded()))°C, which can be normal during tests or sustained writes.")
-            recommendations.append("Let the drive cool after the test and watch for repeated temperature spikes.")
+            recommendations.append("Let the drive cool after heavy activity and watch for repeated spikes.")
         }
 
         if let percentageUsed, percentageUsed >= 100 {
             health = .critical
             reasons.append("Reported endurance is fully consumed.")
-            recommendations.append("Replace this SSD as soon as possible.")
+            recommendations.append("Replace this SSD now.")
         } else if let percentageUsed, percentageUsed >= 80 {
             health = maxHealth(health, .caution)
             reasons.append("This SSD has used \(percentageUsed)% of its rated endurance.")
-            recommendations.append("Schedule replacement planning before failures start stacking up.")
+            recommendations.append("Plan a replacement before wear gets worse.")
         }
 
         if let availableSpare, availableSpare <= 10 {
             health = .critical
             reasons.append("Only \(availableSpare)% spare capacity remains.")
-            recommendations.append("Replace the drive and confirm backups are current.")
+            recommendations.append("Replace the drive soon and confirm backups are current.")
         } else if let availableSpare, availableSpare <= 20 {
             health = maxHealth(health, .caution)
             reasons.append("Available spare has dropped to \(availableSpare)%.")
-            recommendations.append("Monitor spare capacity and run a short self-test.")
+            recommendations.append("Monitor spare capacity closely.")
+            recommendations.append("Run a short self-test if the connection supports it.")
         }
 
         if !alerts.isEmpty {
             health = maxHealth(health, .caution)
             reasons.append("smartctl reported issues that deserve a closer look.")
-            recommendations.append("Review the reported alerts below before making changes or replacements.")
+            recommendations.append("Review the reported alerts before relying on this drive.")
         }
 
         if reasons.isEmpty {
@@ -429,7 +554,7 @@ struct SmartctlService {
             }
 
             recommendations.append("No immediate action is needed.")
-            recommendations.append("Refresh after heavy workloads or before maintenance windows.")
+            recommendations.append("Check again after heavy workloads or before maintenance windows.")
         }
 
         let headline: String

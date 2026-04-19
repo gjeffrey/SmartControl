@@ -4,10 +4,13 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
+    static let attentionSelectionID = "__attention__"
+
     private let diskDiscovery = DiskDiscoveryService()
     private let smartctl = SmartctlService()
     private let historyStore = InspectionHistoryStore()
     private let eventStore = MonitoringEventStore()
+    private let diagnosticsExporter = DiagnosticsExportService()
     private let notifications = NotificationService()
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var lastMissingToolRecheckAt: Date?
@@ -59,11 +62,19 @@ final class AppModel {
     }
 
     var selectedSnapshot: DriveSnapshot? {
+        guard selection != Self.attentionSelectionID else {
+            return nil
+        }
+
         guard let selection else {
             return filteredSnapshots.first
         }
 
         return snapshots.first(where: { $0.id == selection })
+    }
+
+    var isShowingAttentionCenter: Bool {
+        selection == Self.attentionSelectionID
     }
 
     var attentionItems: [AttentionItem] {
@@ -137,7 +148,8 @@ final class AppModel {
 
     func shouldTreatSelfTestStatusAsLive(for snapshot: DriveSnapshot) -> Bool {
         guard case let .loaded(inspection) = snapshot.inspectionState,
-              let status = inspection.selfTestStatusInfo else {
+              let status = inspection.selfTestStatusInfo,
+              status.isInProgress else {
             return false
         }
 
@@ -418,6 +430,10 @@ final class AppModel {
         notifications.openSystemNotificationSettings()
     }
 
+    func showAttentionCenter() {
+        selection = Self.attentionSelectionID
+    }
+
     func handleScenePhaseChange(isActive: Bool) {
         isSceneActive = isActive
         if isActive {
@@ -460,6 +476,10 @@ final class AppModel {
 
     func recentEvents(for deviceIdentifier: String, limit: Int = 5) -> [MonitoringEvent] {
         Array((eventsByDevice[deviceIdentifier] ?? []).suffix(limit).reversed())
+    }
+
+    func allRecentEvents(limit: Int = 20) -> [AttentionItem] {
+        attentionItems.sorted { $0.createdAt > $1.createdAt }.prefix(limit).map { $0 }
     }
 
     func changeSummary(for device: StorageDevice, inspection: DeviceInspection) -> [String] {
@@ -515,6 +535,21 @@ final class AppModel {
         return Array(changes.prefix(3))
     }
 
+    func exportDiagnostics() async {
+        let payload = diagnosticsPayload()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd-HHmm"
+        let filename = "SmartControl-Diagnostics-\(formatter.string(from: Date())).json"
+
+        do {
+            _ = try await diagnosticsExporter.exportReport(payload: payload, suggestedName: filename)
+        } catch is CancellationError {
+            return
+        } catch {
+            lastRefreshError = "Could not export diagnostics: \(error.localizedDescription)"
+        }
+    }
+
     private func updateInspectionState(_ state: InspectionState, for identifier: String) {
         guard let index = snapshots.firstIndex(where: { $0.id == identifier }) else {
             return
@@ -552,6 +587,13 @@ final class AppModel {
         let previousStatus = previousInspection?.selfTestStatusInfo
         let currentStatus = inspection.selfTestStatusInfo
         let pendingKind = pendingSelfTestKindByDevice[identifier]
+
+        if currentStatus?.kind == .idle {
+            currentTaskByDevice[identifier] = nil
+            pendingSelfTestKindByDevice[identifier] = nil
+            updateActivityFromTask(for: identifier)
+            return
+        }
 
         if let currentStatus, currentStatus.isInProgress {
             guard isTrustedSelfTestStatus(currentStatus, for: identifier, device: device) else {
@@ -704,6 +746,8 @@ final class AppModel {
     ) {
         let state: DriveTaskState
         switch status.kind {
+        case .idle:
+            state = .succeeded
         case .passed:
             state = .succeeded
         case .failed, .aborted:
@@ -944,6 +988,119 @@ final class AppModel {
         }
 
         return sustained
+    }
+
+    private func diagnosticsPayload() -> [String: Any] {
+        let formatter = ISO8601DateFormatter()
+
+        let drives: [[String: Any]] = snapshots.map { snapshot in
+            var record: [String: Any] = [
+                "deviceIdentifier": snapshot.device.deviceIdentifier,
+                "deviceNode": snapshot.device.deviceNode,
+                "displayName": snapshot.device.displayName,
+                "subtitle": snapshot.device.subtitle,
+                "busProtocol": snapshot.device.busProtocol,
+                "capacityBytes": snapshot.device.sizeBytes,
+                "internal": snapshot.device.isInternal,
+                "solidState": snapshot.device.isSolidState,
+                "removable": snapshot.device.isRemovable,
+                "ejectable": snapshot.device.isEjectable,
+                "writable": jsonValue(snapshot.device.isWritable),
+                "mountedFreeBytes": jsonValue(snapshot.device.totalAvailableBytesOnMountedVolumes),
+                "partitions": snapshot.device.partitions.map { partition in
+                    [
+                        "identifier": partition.identifier,
+                        "name": partition.name,
+                        "mountPoint": jsonValue(partition.mountPoint),
+                        "sizeBytes": jsonValue(partition.sizeBytes),
+                        "contentType": jsonValue(partition.contentType),
+                        "fileSystemName": jsonValue(partition.fileSystemName),
+                        "availableBytes": jsonValue(partition.availableBytes),
+                    ]
+                },
+                "recentEvents": recentEvents(for: snapshot.id).map { event in
+                    [
+                        "kind": event.kind.rawValue,
+                        "severity": event.severity.rawValue,
+                        "title": event.title,
+                        "detail": event.detail,
+                        "createdAt": formatter.string(from: event.createdAt),
+                    ]
+                },
+                "recentHistory": recentHistory(for: snapshot.device.deviceIdentifier).map { entry in
+                    [
+                        "capturedAt": formatter.string(from: entry.capturedAt),
+                        "health": entry.health.rawValue,
+                        "temperatureC": jsonValue(entry.temperatureC),
+                        "powerOnHours": jsonValue(entry.powerOnHours),
+                        "percentageUsed": jsonValue(entry.percentageUsed),
+                        "availableSpare": jsonValue(entry.availableSpare),
+                        "selfTestStatus": jsonValue(entry.selfTestStatus),
+                        "alertsCount": entry.alertsCount,
+                    ]
+                },
+            ]
+
+            switch snapshot.inspectionState {
+            case .loading:
+                record["inspectionState"] = "loading"
+            case let .unavailable(issue):
+                record["inspectionState"] = "unavailable"
+                record["issue"] = [
+                    "kind": String(describing: issue.kind),
+                    "title": issue.title,
+                    "message": issue.message,
+                    "recoverySuggestion": jsonValue(issue.recoverySuggestion),
+                ]
+            case let .loaded(inspection):
+                record["inspectionState"] = "loaded"
+                record["inspection"] = [
+                    "capturedAt": formatter.string(from: inspection.capturedAt),
+                    "health": inspection.health.rawValue,
+                    "headline": inspection.headline,
+                    "reasons": inspection.reasons,
+                    "recommendations": inspection.recommendations,
+                    "alerts": inspection.alerts,
+                    "technicalNotes": inspection.technicalNotes,
+                    "summary": [
+                        "modelName": inspection.summary.modelName,
+                        "serialNumber": jsonValue(inspection.summary.serialNumber),
+                        "firmwareVersion": jsonValue(inspection.summary.firmwareVersion),
+                        "protocolName": jsonValue(inspection.summary.protocolName),
+                        "capacityBytes": jsonValue(inspection.summary.capacityBytes),
+                        "temperatureC": jsonValue(inspection.summary.temperatureC),
+                        "powerOnHours": jsonValue(inspection.summary.powerOnHours),
+                        "percentageUsed": jsonValue(inspection.summary.percentageUsed),
+                        "availableSpare": jsonValue(inspection.summary.availableSpare),
+                        "smartPassed": jsonValue(inspection.summary.smartPassed),
+                        "selfTestStatus": jsonValue(inspection.summary.selfTestStatus),
+                    ],
+                    "rawJSON": inspection.rawJSON,
+                ]
+            }
+
+            return record
+        }
+
+        return [
+            "generatedAt": formatter.string(from: Date()),
+            "appSelection": jsonValue(selection),
+            "attentionItems": attentionItems.map { item in
+                [
+                    "deviceIdentifier": item.deviceIdentifier,
+                    "deviceName": item.deviceName,
+                    "title": item.title,
+                    "detail": item.detail,
+                    "severity": item.severity.rawValue,
+                    "createdAt": formatter.string(from: item.createdAt),
+                ]
+            },
+            "drives": drives,
+        ]
+    }
+
+    private func jsonValue<T>(_ value: T?) -> Any {
+        value ?? NSNull()
     }
 
     private func recordEvent(_ event: MonitoringEvent) {
