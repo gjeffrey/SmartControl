@@ -11,7 +11,7 @@ struct DriveDetailView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
                         heroCard(for: snapshot)
-                        if model.currentTask(for: snapshot.id) != nil || model.recentTask(for: snapshot.id) != nil {
+                        if shouldShowActivityCard(for: snapshot) {
                             activityCard(for: snapshot)
                         }
 
@@ -22,11 +22,12 @@ struct DriveDetailView: View {
                                     .controlSize(.large)
                             }
                         case let .loaded(inspection):
-                            if inspection.selfTestStatusInfo != nil {
+                            if shouldShowSelfTestCard(for: snapshot, inspection: inspection) {
                                 selfTestCard(for: inspection)
                             }
-                            metricsCard(for: inspection)
-                            actionCard(for: inspection)
+                            changeSummaryCard(for: snapshot.device, inspection: inspection)
+                            metricsCard(for: snapshot, inspection: inspection)
+                            actionCard(for: snapshot, inspection: inspection)
                             historyCard(for: inspection, device: snapshot.device)
                             volumesCard(for: snapshot.device)
 
@@ -197,14 +198,54 @@ struct DriveDetailView: View {
         }
     }
 
-    private func metricsCard(for inspection: DeviceInspection) -> some View {
-        SectionCard("What Matters") {
+    private func shouldShowActivityCard(for snapshot: DriveSnapshot) -> Bool {
+        guard let task = model.currentTask(for: snapshot.id) ?? model.recentTask(for: snapshot.id) else {
+            return false
+        }
+
+        switch task.kind {
+        case .refresh:
+            return true
+        case .selfTest:
+            return task.state != .running
+        }
+    }
+
+    private func shouldShowSelfTestCard(for snapshot: DriveSnapshot, inspection: DeviceInspection) -> Bool {
+        guard inspection.selfTestStatusInfo != nil else {
+            return false
+        }
+
+        guard model.shouldTreatSelfTestStatusAsLive(for: snapshot) else {
+            return false
+        }
+
+        guard let task = model.currentTask(for: snapshot.id) ?? model.recentTask(for: snapshot.id) else {
+            return true
+        }
+
+        switch task.kind {
+        case .refresh:
+            return true
+        case .selfTest:
+            return task.state == .running
+        }
+    }
+
+    private func metricsCard(for snapshot: DriveSnapshot, inspection: DeviceInspection) -> some View {
+        let liveSelfTest = model.shouldTreatSelfTestStatusAsLive(for: snapshot)
+        let bridgeNote = model.bridgeReportedSelfTestNote(for: snapshot)
+        let metrics = inspection.keyMetrics.filter { metric in
+            liveSelfTest || metric.label != "Self-Test"
+        }
+
+        return SectionCard("What Matters") {
             VStack(alignment: .leading, spacing: 20) {
                 Text(inspection.headline)
                     .font(.title3.weight(.semibold))
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 16)], spacing: 16) {
-                    ForEach(inspection.keyMetrics) { metric in
+                    ForEach(metrics) { metric in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(metric.label.uppercased())
                                 .font(.caption.weight(.semibold))
@@ -223,6 +264,11 @@ struct DriveDetailView: View {
                     }
                 }
 
+                if let bridgeNote {
+                    Label(bridgeNote, systemImage: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+
                 if !inspection.reasons.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Why")
@@ -234,6 +280,23 @@ struct DriveDetailView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private func changeSummaryCard(for device: StorageDevice, inspection: DeviceInspection) -> some View {
+        let changes = model.changeSummary(for: device, inspection: inspection)
+
+        return SectionCard("What Changed") {
+            VStack(alignment: .leading, spacing: 12) {
+                ForEach(changes, id: \.self) { change in
+                    Label(change, systemImage: change == "No meaningful change since the last check." ? "minus.circle" : "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Compared with \(model.comparisonBaseline(for: device.deviceIdentifier, currentCapturedAt: inspection.capturedAt).map { Formatters.dateTime($0.capturedAt) } ?? "the first saved check").")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -341,10 +404,11 @@ struct DriveDetailView: View {
         }
     }
 
-    private func actionCard(for inspection: DeviceInspection) -> some View {
+    private func actionCard(for snapshot: DriveSnapshot, inspection: DeviceInspection) -> some View {
         let currentTask = model.selectedSnapshot.flatMap { model.currentTask(for: $0.id) }
-        let selfTestRunning = inspection.selfTestStatusInfo?.isInProgress == true || (currentTask?.kind.isSelfTest == true && currentTask?.state == .running)
+        let selfTestRunning = model.shouldTreatSelfTestStatusAsLive(for: snapshot) || (currentTask?.kind.isSelfTest == true && currentTask?.state == .running)
         let awaitingAdminRefresh = currentTask?.state == .waitingForAdmin
+        let bridgeNote = model.bridgeReportedSelfTestNote(for: snapshot)
 
         return SectionCard("Actions") {
             VStack(alignment: .leading, spacing: 16) {
@@ -377,6 +441,8 @@ struct DriveDetailView: View {
                     ? "A self-test is currently running. SmartControl will refresh automatically and show the result here when it finishes."
                     : awaitingAdminRefresh
                         ? "This drive likely needs administrator access before SmartControl can show self-test progress or results."
+                        : bridgeNote != nil
+                            ? "This enclosure is reporting a self-test state, but SmartControl cannot confirm that it applies to this specific drive."
                         : "Short tests are quick confidence checks. Extended tests are better before a migration, backup validation, or when a drive starts behaving strangely.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

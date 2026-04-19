@@ -59,14 +59,16 @@ struct ContentView: View {
             }
         }
         .onChange(of: scenePhase) { _, newValue in
-            guard newValue == .active else {
-                return
-            }
+            model.handleScenePhaseChange(isActive: newValue == .active)
 
+            guard newValue == .active else { return }
             Task { await model.recheckMissingSmartctlIfNeeded() }
         }
         .onChange(of: model.selection) { _, _ in
             Task { await model.recheckMissingSmartctlIfNeeded() }
+        }
+        .task {
+            model.handleScenePhaseChange(isActive: scenePhase == .active)
         }
     }
 }

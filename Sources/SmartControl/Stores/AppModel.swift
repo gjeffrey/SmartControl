@@ -12,8 +12,10 @@ final class AppModel {
     @ObservationIgnored private var lastMissingToolRecheckAt: Date?
     @ObservationIgnored private let missingToolRecheckCooldown: TimeInterval = 6
     @ObservationIgnored private var selfTestRefreshTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var monitoringTask: Task<Void, Never>?
     @ObservationIgnored private let selfTestRefreshInterval: Duration = .seconds(10)
     @ObservationIgnored private var pendingSelfTestKindByDevice: [String: SmartSelfTestKind] = [:]
+    @ObservationIgnored private var isSceneActive = false
 
     var snapshots: [DriveSnapshot] = []
     var historyByDevice: [String: [HistoricalDriveSnapshot]] = [:]
@@ -27,11 +29,16 @@ final class AppModel {
     var smartctlPathOverride: String
     var preferAdministratorAccess: Bool
     var notificationsEnabled: Bool
+    var notificationAuthorizationStatus: NotificationAuthorizationState = .unknown
+    var monitoringCadence: MonitoringCadence
+    var monitoringExternalOnly: Bool
 
     init() {
         smartctlPathOverride = defaults.string(forKey: "smartctlPathOverride") ?? ""
         preferAdministratorAccess = defaults.bool(forKey: "preferAdministratorAccess")
         notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
+        monitoringCadence = MonitoringCadence(rawValue: defaults.integer(forKey: "monitoringCadence")) ?? .off
+        monitoringExternalOnly = defaults.object(forKey: "monitoringExternalOnly") as? Bool ?? true
         historyByDevice = (try? historyStore.loadAll()) ?? [:]
     }
 
@@ -68,6 +75,30 @@ final class AppModel {
         recentTaskByDevice[deviceIdentifier]
     }
 
+    func shouldTreatSelfTestStatusAsLive(for snapshot: DriveSnapshot) -> Bool {
+        guard case let .loaded(inspection) = snapshot.inspectionState,
+              let status = inspection.selfTestStatusInfo else {
+            return false
+        }
+
+        return isTrustedSelfTestStatus(
+            status,
+            for: snapshot.id,
+            device: snapshot.device
+        )
+    }
+
+    func bridgeReportedSelfTestNote(for snapshot: DriveSnapshot) -> String? {
+        guard case let .loaded(inspection) = snapshot.inspectionState,
+              let status = inspection.selfTestStatusInfo,
+              status.isInProgress,
+              !isTrustedSelfTestStatus(status, for: snapshot.id, device: snapshot.device) else {
+            return nil
+        }
+
+        return "This USB enclosure appears to be reporting a shared self-test state. SmartControl will not treat it as a confirmed per-drive running test unless you start one here."
+    }
+
     func refresh(forcePrivilegePrompt: Bool = false) async {
         isRefreshing = true
         lastRefreshError = nil
@@ -77,6 +108,8 @@ final class AppModel {
             defaults.set(smartctlPathOverride, forKey: "smartctlPathOverride")
             defaults.set(preferAdministratorAccess, forKey: "preferAdministratorAccess")
             defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
+            defaults.set(monitoringCadence.rawValue, forKey: "monitoringCadence")
+            defaults.set(monitoringExternalOnly, forKey: "monitoringExternalOnly")
         }
 
         do {
@@ -293,13 +326,46 @@ final class AppModel {
         }
 
         if newValue {
-            let granted = await notifications.requestAuthorization()
-            if !granted {
+            let status = await notifications.authorizationStatus()
+
+            switch status {
+            case .authorized, .provisional:
+                notificationsEnabled = true
+            case .notDetermined:
+                let granted = await notifications.requestAuthorization()
+                notificationsEnabled = granted
+            case .denied, .unknown:
                 notificationsEnabled = false
             }
+        } else {
+            notificationsEnabled = false
         }
 
+        await refreshNotificationAuthorizationStatus()
         defaults.set(notificationsEnabled, forKey: "notificationsEnabled")
+    }
+
+    func refreshNotificationAuthorizationStatus() async {
+        notificationAuthorizationStatus = await notifications.authorizationStatus()
+    }
+
+    func openNotificationSettings() {
+        notifications.openSystemNotificationSettings()
+    }
+
+    func handleScenePhaseChange(isActive: Bool) {
+        isSceneActive = isActive
+        if isActive {
+            startMonitoringIfNeeded()
+        } else {
+            stopMonitoring()
+        }
+    }
+
+    func updateMonitoringPreferences() {
+        defaults.set(monitoringCadence.rawValue, forKey: "monitoringCadence")
+        defaults.set(monitoringExternalOnly, forKey: "monitoringExternalOnly")
+        startMonitoringIfNeeded()
     }
 
     func history(for deviceIdentifier: String) -> [HistoricalDriveSnapshot] {
@@ -325,6 +391,59 @@ final class AppModel {
 
     func recentHistory(for deviceIdentifier: String, limit: Int = 5) -> [HistoricalDriveSnapshot] {
         Array(history(for: deviceIdentifier).suffix(limit).reversed())
+    }
+
+    func changeSummary(for device: StorageDevice, inspection: DeviceInspection) -> [String] {
+        guard let previous = comparisonBaseline(
+            for: device.deviceIdentifier,
+            currentCapturedAt: inspection.capturedAt
+        ) else {
+            return ["SmartControl is building a baseline for this drive."]
+        }
+
+        var changes: [String] = []
+
+        if inspection.health != previous.health {
+            changes.append("Health changed from \(previous.health.title) to \(inspection.health.title).")
+        }
+
+        if let temperatureChange = Formatters.signedTemperatureDelta(
+            from: previous.temperatureC,
+            to: inspection.summary.temperatureC
+        ), temperatureChange != "unchanged" {
+            changes.append("Temperature is \(temperatureChange) since the last check.")
+        }
+
+        if let alertsChange = Formatters.signedIntDelta(
+            from: previous.alertsCount,
+            to: inspection.alerts.count
+        ), alertsChange != "unchanged" {
+            if inspection.alerts.count > previous.alertsCount {
+                changes.append("There \(inspection.alerts.count - previous.alertsCount == 1 ? "is" : "are") \(inspection.alerts.count - previous.alertsCount) new SMART \(inspection.alerts.count - previous.alertsCount == 1 ? "alert" : "alerts").")
+            } else {
+                changes.append("SMART alerts decreased since the last check.")
+            }
+        }
+
+        if previous.selfTestStatus != inspection.summary.selfTestStatus,
+           let currentStatus = inspection.summary.selfTestStatus,
+           !currentStatus.isEmpty {
+            changes.append("Self-test status changed to \(currentStatus).")
+        }
+
+        if let enduranceChange = Formatters.signedIntDelta(
+            from: previous.percentageUsed,
+            to: inspection.summary.percentageUsed,
+            suffix: "%"
+        ), enduranceChange != "unchanged" {
+            changes.append("Endurance used is \(enduranceChange) since the last check.")
+        }
+
+        if changes.isEmpty {
+            return ["No meaningful change since the last check."]
+        }
+
+        return Array(changes.prefix(3))
     }
 
     private func updateInspectionState(_ state: InspectionState, for identifier: String) {
@@ -366,6 +485,14 @@ final class AppModel {
         let pendingKind = pendingSelfTestKindByDevice[identifier]
 
         if let currentStatus, currentStatus.isInProgress {
+            guard isTrustedSelfTestStatus(currentStatus, for: identifier, device: device) else {
+                if isRefreshTask(currentTaskByDevice[identifier]) {
+                    currentTaskByDevice[identifier] = nil
+                }
+                updateActivityFromTask(for: identifier)
+                return
+            }
+
             let taskKind = pendingKind.map(DriveTaskKind.selfTest) ?? inferredSelfTestKind(for: identifier)
             setTask(
                 DriveTask(
@@ -415,7 +542,10 @@ final class AppModel {
     }
 
     private func manageSelfTestRefresh(for identifier: String, inspection: DeviceInspection) {
-        guard let status = inspection.selfTestStatusInfo, status.isInProgress else {
+        guard let snapshot = snapshots.first(where: { $0.id == identifier }),
+              let status = inspection.selfTestStatusInfo,
+              status.isInProgress,
+              isTrustedSelfTestStatus(status, for: identifier, device: snapshot.device) else {
             selfTestRefreshTasks[identifier]?.cancel()
             selfTestRefreshTasks[identifier] = nil
             return
@@ -638,6 +768,35 @@ final class AppModel {
         return .selfTest(.short)
     }
 
+    private func isTrustedSelfTestStatus(
+        _ status: SelfTestStatusInfo,
+        for identifier: String,
+        device: StorageDevice
+    ) -> Bool {
+        guard status.isInProgress else {
+            return true
+        }
+
+        if pendingSelfTestKindByDevice[identifier] != nil {
+            return true
+        }
+
+        if let currentTask = currentTaskByDevice[identifier], currentTask.kind.isSelfTest {
+            return true
+        }
+
+        if device.isInternal {
+            return true
+        }
+
+        let protocolName = device.busProtocol.lowercased()
+        if protocolName.contains("usb") {
+            return false
+        }
+
+        return true
+    }
+
     private func notifyIfHealthRegressed(
         from previousInspection: DeviceInspection?,
         to currentInspection: DeviceInspection,
@@ -683,6 +842,63 @@ final class AppModel {
             return 2
         case .unknown:
             return -1
+        }
+    }
+
+    private func startMonitoringIfNeeded() {
+        monitoringTask?.cancel()
+        monitoringTask = nil
+
+        guard isSceneActive, let interval = monitoringCadence.interval else {
+            return
+        }
+
+        monitoringTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled else { break }
+
+                await MainActor.run {
+                    guard self.isSceneActive else {
+                        return
+                    }
+                }
+
+                await refreshMonitoredDevices()
+            }
+        }
+    }
+
+    private func stopMonitoring() {
+        monitoringTask?.cancel()
+        monitoringTask = nil
+    }
+
+    private func refreshMonitoredDevices() async {
+        guard !isRefreshing else {
+            return
+        }
+
+        let deviceIDs = snapshots.compactMap { snapshot -> String? in
+            if monitoringExternalOnly && snapshot.device.isInternal {
+                return nil
+            }
+
+            if currentTaskByDevice[snapshot.id]?.isActive == true {
+                return nil
+            }
+
+            return snapshot.id
+        }
+
+        for identifier in deviceIDs {
+            await refreshDevice(
+                identifier: identifier,
+                forcePrivilegePrompt: false,
+                respectAdminPreference: false
+            )
         }
     }
 }

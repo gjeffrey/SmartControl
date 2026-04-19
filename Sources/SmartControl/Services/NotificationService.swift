@@ -2,6 +2,14 @@ import AppKit
 import Foundation
 import UserNotifications
 
+enum NotificationAuthorizationState: Equatable {
+    case notDetermined
+    case authorized
+    case denied
+    case provisional
+    case unknown
+}
+
 @MainActor
 struct NotificationService {
     func requestAuthorization() async -> Bool {
@@ -11,6 +19,23 @@ struct NotificationService {
             center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
                 continuation.resume(returning: granted)
             }
+        }
+    }
+
+    func authorizationStatus() async -> NotificationAuthorizationState {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .notDetermined:
+            return .notDetermined
+        case .authorized:
+            return .authorized
+        case .denied:
+            return .denied
+        case .provisional:
+            return .provisional
+        default:
+            return .unknown
         }
     }
 
@@ -32,7 +57,6 @@ struct NotificationService {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
 
         let request = UNNotificationRequest(
             identifier: id,
@@ -41,5 +65,13 @@ struct NotificationService {
         )
 
         try? await center.add(request)
+    }
+
+    func openSystemNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else {
+            return
+        }
+
+        NSWorkspace.shared.open(url)
     }
 }

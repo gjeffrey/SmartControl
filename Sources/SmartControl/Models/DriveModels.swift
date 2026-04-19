@@ -331,6 +331,36 @@ struct HistoricalDriveSnapshot: Codable, Hashable, Identifiable {
     }
 }
 
+enum MonitoringCadence: Int, CaseIterable, Hashable, Identifiable {
+    case off = 0
+    case every30Minutes = 30
+    case everyHour = 60
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .off:
+            return "Off"
+        case .every30Minutes:
+            return "Every 30 Minutes"
+        case .everyHour:
+            return "Every Hour"
+        }
+    }
+
+    var interval: Duration? {
+        switch self {
+        case .off:
+            return nil
+        case .every30Minutes:
+            return .seconds(30 * 60)
+        case .everyHour:
+            return .seconds(60 * 60)
+        }
+    }
+}
+
 enum SmartSelfTestKind: String, CaseIterable, Hashable {
     case short
     case extended

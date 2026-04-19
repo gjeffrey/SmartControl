@@ -18,9 +18,24 @@ struct SettingsView: View {
                 Toggle("Always use administrator access when reading SMART data", isOn: $model.preferAdministratorAccess)
                 Toggle("Notify when self-tests finish or drive health gets worse", isOn: $model.notificationsEnabled)
 
+                notificationStatusView
+
                 Button("Refresh Now") {
                     Task { await model.refresh(forcePrivilegePrompt: model.preferAdministratorAccess) }
                 }
+            }
+
+            Section("Monitoring") {
+                Picker("Background Checks", selection: $model.monitoringCadence) {
+                    ForEach(MonitoringCadence.allCases) { cadence in
+                        Text(cadence.title).tag(cadence)
+                    }
+                }
+
+                Toggle("Only monitor external drives", isOn: $model.monitoringExternalOnly)
+
+                Text("Monitoring runs only while SmartControl is open. It checks connected drives quietly without prompting for administrator access.")
+                    .foregroundStyle(.secondary)
             }
 
             Section("How SmartControl Works") {
@@ -32,8 +47,42 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            await model.refreshNotificationAuthorizationStatus()
+        }
         .onChange(of: model.notificationsEnabled) { oldValue, newValue in
             Task { await model.handleNotificationPreferenceChange(from: oldValue, to: newValue) }
+        }
+        .onChange(of: model.monitoringCadence) { _, _ in
+            model.updateMonitoringPreferences()
+        }
+        .onChange(of: model.monitoringExternalOnly) { _, _ in
+            model.updateMonitoringPreferences()
+        }
+    }
+
+    @ViewBuilder
+    private var notificationStatusView: some View {
+        switch model.notificationAuthorizationStatus {
+        case .authorized, .provisional:
+            Label("macOS notifications are allowed for SmartControl.", systemImage: "bell.badge")
+                .foregroundStyle(.secondary)
+        case .notDetermined:
+            Label("Turn this on and macOS should ask once for notification permission.", systemImage: "bell")
+                .foregroundStyle(.secondary)
+        case .denied:
+            VStack(alignment: .leading, spacing: 8) {
+                Label("macOS notifications are currently turned off for SmartControl.", systemImage: "bell.slash")
+                    .foregroundStyle(.secondary)
+
+                Button("Open Notification Settings") {
+                    model.openNotificationSettings()
+                }
+                .buttonStyle(.link)
+            }
+        case .unknown:
+            Label("SmartControl could not confirm notification permission yet.", systemImage: "questionmark.circle")
+                .foregroundStyle(.secondary)
         }
     }
 }
