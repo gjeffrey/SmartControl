@@ -380,10 +380,13 @@ struct SmartctlService {
             health = .critical
             reasons.append("Drive temperature is critically high at \(Int(temperatureC.rounded()))°C.")
             recommendations.append("Reduce sustained load and check airflow or enclosure cooling.")
-        } else if let temperatureC, temperatureC >= 50 {
+        } else if let temperatureC, temperatureC >= 55 {
             health = maxHealth(health, .caution)
             reasons.append("Drive temperature is elevated at \(Int(temperatureC.rounded()))°C.")
             recommendations.append("Keep an eye on temperature during long writes and tests.")
+        } else if let temperatureC, temperatureC >= 50 {
+            reasons.append("Drive temperature is warm at \(Int(temperatureC.rounded()))°C, which can be normal during tests or sustained writes.")
+            recommendations.append("Let the drive cool after the test and watch for repeated temperature spikes.")
         }
 
         if let percentageUsed, percentageUsed >= 100 {
