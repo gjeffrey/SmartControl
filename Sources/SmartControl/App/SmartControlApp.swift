@@ -12,14 +12,14 @@ struct SmartControlApp: App {
                 .frame(minWidth: 1080, minHeight: 720)
                 .task {
                     if model.snapshots.isEmpty {
-                        await model.refresh()
+                        await model.refresh(respectAdminPreference: false)
                     }
                 }
         }
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Refresh Drives") {
-                    Task { await model.refresh() }
+                    Task { await model.refresh(respectAdminPreference: false) }
                 }
                 .keyboardShortcut("r")
 

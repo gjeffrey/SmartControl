@@ -1,6 +1,13 @@
 import Foundation
 
 struct SmartctlService {
+    struct ProbeAttempt {
+        let arguments: [String]
+        let result: CommandResult
+        let success: Bool
+        let classification: String
+    }
+
     private let runner = CommandRunner()
     private let batchBeginMarker = "__SMARTCONTROL_BEGIN__"
     private let batchEndMarker = "__SMARTCONTROL_END__"
@@ -16,6 +23,76 @@ struct SmartctlService {
         "sat,auto",
         "scsi",
     ]
+
+    func collectProbeDiagnostics(
+        devices: [StorageDevice],
+        preferredPath: String
+    ) async -> [String: Any] {
+        guard let executable = resolvedSmartctlPath(preferredPath: preferredPath) else {
+            return [
+                "resolvedSmartctlPath": NSNull(),
+                "smartctlFound": false,
+                "devices": devices.map { device in
+                    [
+                        "deviceIdentifier": device.deviceIdentifier,
+                        "deviceNode": device.deviceNode,
+                        "displayName": device.displayName,
+                        "busProtocol": device.busProtocol,
+                        "attempts": [],
+                    ]
+                },
+            ]
+        }
+
+        var records: [[String: Any]] = []
+        for device in devices {
+            do {
+                let attempts = try await executeProbeAttempts(
+                    executable: executable,
+                    device: device,
+                    arguments: ["--all", "--json"],
+                    privilegeMode: .standard
+                )
+
+                records.append(
+                    [
+                        "deviceIdentifier": device.deviceIdentifier,
+                        "deviceNode": device.deviceNode,
+                        "displayName": device.displayName,
+                        "busProtocol": device.busProtocol,
+                        "attempts": attempts.map { attempt in
+                            [
+                                "command": ([executable] + attempt.arguments).joined(separator: " "),
+                                "arguments": attempt.arguments,
+                                "exitCode": Int(attempt.result.exitCode),
+                                "successHeuristic": attempt.success,
+                                "classification": attempt.classification,
+                                "stdout": attempt.result.stdout,
+                                "stderr": attempt.result.stderr,
+                            ]
+                        },
+                    ]
+                )
+            } catch {
+                records.append(
+                    [
+                        "deviceIdentifier": device.deviceIdentifier,
+                        "deviceNode": device.deviceNode,
+                        "displayName": device.displayName,
+                        "busProtocol": device.busProtocol,
+                        "error": error.localizedDescription,
+                        "attempts": [],
+                    ]
+                )
+            }
+        }
+
+        return [
+            "resolvedSmartctlPath": executable,
+            "smartctlFound": true,
+            "devices": records,
+        ]
+    }
 
     func inspect(
         device: StorageDevice,
@@ -172,8 +249,34 @@ struct SmartctlService {
         arguments: [String],
         privilegeMode: CommandRunner.PrivilegeMode
     ) async throws -> (arguments: [String], result: CommandResult) {
+        let attempts = try await executeProbeAttempts(
+            executable: executable,
+            device: device,
+            arguments: arguments,
+            privilegeMode: privilegeMode
+        )
+
+        if let success = attempts.first(where: \.success) {
+            return (Array(success.arguments.dropLast()), success.result)
+        }
+
+        if let last = attempts.last {
+            return (Array(last.arguments.dropLast()), last.result)
+        }
+
+        let fallbackArguments = arguments + [device.deviceNode]
+        let result = try await runner.run(executable: executable, arguments: fallbackArguments, privilegeMode: privilegeMode)
+        return (arguments, result)
+    }
+
+    private func executeProbeAttempts(
+        executable: String,
+        device: StorageDevice,
+        arguments: [String],
+        privilegeMode: CommandRunner.PrivilegeMode
+    ) async throws -> [ProbeAttempt] {
         let candidates = argumentCandidates(for: device, baseArguments: arguments)
-        var lastFailure: (arguments: [String], result: CommandResult)?
+        var attempts: [ProbeAttempt] = []
 
         for candidate in candidates {
             let result = try await runner.run(
@@ -183,24 +286,22 @@ struct SmartctlService {
             )
 
             let combined = [result.stdout, result.stderr].joined(separator: "\n")
-            if shouldTreatAsSuccessfulProbe(result: result, output: combined) {
-                return (candidate.dropLast().map { $0 }, result)
+            let success = shouldTreatAsSuccessfulProbe(result: result, output: combined)
+            attempts.append(
+                ProbeAttempt(
+                    arguments: candidate,
+                    result: result,
+                    success: success,
+                    classification: classifyProbeOutput(result: result, output: combined)
+                )
+            )
+
+            if success {
+                break
             }
-
-            lastFailure = (candidate.dropLast().map { $0 }, result)
         }
 
-        if let lastFailure {
-            return lastFailure
-        }
-
-        let fallbackArguments = arguments + [device.deviceNode]
-        let result = try await runner.run(
-            executable: executable,
-            arguments: fallbackArguments,
-            privilegeMode: privilegeMode
-        )
-        return (arguments, result)
+        return attempts
     }
 
     private func argumentCandidates(for device: StorageDevice, baseArguments: [String]) -> [[String]] {
@@ -237,6 +338,44 @@ struct SmartctlService {
         }
 
         return false
+    }
+
+    private func classifyProbeOutput(result: CommandResult, output: String) -> String {
+        if result.exitCode == 0 {
+            return "usable-json"
+        }
+
+        if isPermissionIssue(output) {
+            return "permission-required"
+        }
+
+        let lower = output.lowercased()
+        if lower.contains("unknown usb bridge")
+            || lower.contains("unsupported usb bridge")
+            || lower.contains("no sat passthrough") {
+            return "usb-bridge-unsupported"
+        }
+
+        if lower.contains("specify device type")
+            || lower.contains("please specify device type") {
+            return "device-type-needed"
+        }
+
+        if lower.contains("badly formed scsi parameters") {
+            return "bad-scsi-parameters"
+        }
+
+        if lower.contains("operation not permitted")
+            || lower.contains("permission denied")
+            || lower.contains("must be root") {
+            return "permission-required"
+        }
+
+        if lower.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "no-output"
+        }
+
+        return "command-failed"
     }
 
     private func classifySelfTestFailure(output: String, device: StorageDevice) -> UserFacingIssue {

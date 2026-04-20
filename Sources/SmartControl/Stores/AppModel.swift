@@ -171,7 +171,10 @@ final class AppModel {
         return "This USB enclosure appears to be reporting a shared self-test state. SmartControl will not treat it as a confirmed per-drive running test unless you start one here."
     }
 
-    func refresh(forcePrivilegePrompt: Bool = false) async {
+    func refresh(
+        forcePrivilegePrompt: Bool = false,
+        respectAdminPreference: Bool = false
+    ) async {
         isRefreshing = true
         lastRefreshError = nil
 
@@ -196,7 +199,7 @@ final class AppModel {
             for device in devices {
                 setRefreshTask(
                     for: device.id,
-                    admin: forcePrivilegePrompt || preferAdministratorAccess
+                    admin: forcePrivilegePrompt || (respectAdminPreference && preferAdministratorAccess)
                 )
             }
 
@@ -204,7 +207,7 @@ final class AppModel {
                 selection = snapshots.first?.id
             }
 
-            let shouldPromptForAdmin = forcePrivilegePrompt || preferAdministratorAccess
+            let shouldPromptForAdmin = forcePrivilegePrompt || (respectAdminPreference && preferAdministratorAccess)
             if shouldPromptForAdmin {
                 let states = try await smartctl.inspectManyWithAdministratorPrompt(
                     devices: devices,
@@ -245,7 +248,7 @@ final class AppModel {
 
     func refreshSelection(forcePrivilegePrompt: Bool = false) async {
         guard let selectedSnapshot else {
-            await refresh(forcePrivilegePrompt: forcePrivilegePrompt)
+            await refresh(forcePrivilegePrompt: forcePrivilegePrompt, respectAdminPreference: false)
             return
         }
 
@@ -536,7 +539,7 @@ final class AppModel {
     }
 
     func exportDiagnostics() async {
-        let payload = diagnosticsPayload()
+        let payload = await diagnosticsPayload()
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HHmm"
         let filename = "SmartControl-Diagnostics-\(formatter.string(from: Date())).json"
@@ -990,8 +993,12 @@ final class AppModel {
         return sustained
     }
 
-    private func diagnosticsPayload() -> [String: Any] {
+    private func diagnosticsPayload() async -> [String: Any] {
         let formatter = ISO8601DateFormatter()
+        let liveProbeDiagnostics = await smartctl.collectProbeDiagnostics(
+            devices: snapshots.map(\.device),
+            preferredPath: smartctlPathOverride
+        )
 
         let drives: [[String: Any]] = snapshots.map { snapshot in
             var record: [String: Any] = [
@@ -1085,6 +1092,34 @@ final class AppModel {
         return [
             "generatedAt": formatter.string(from: Date()),
             "appSelection": jsonValue(selection),
+            "settings": [
+                "smartctlPathOverride": smartctlPathOverride,
+                "preferAdministratorAccess": preferAdministratorAccess,
+                "monitoringCadence": monitoringCadence.title,
+                "monitoringExternalOnly": monitoringExternalOnly,
+            ],
+            "activities": snapshots.map { snapshot in
+                [
+                    "deviceIdentifier": snapshot.device.deviceIdentifier,
+                    "activity": activity(for: snapshot.id).title,
+                    "currentTask": jsonValue(currentTaskByDevice[snapshot.id].map {
+                        [
+                            "kind": $0.kind.title,
+                            "state": String(describing: $0.state),
+                            "title": $0.title,
+                            "detail": $0.detail,
+                        ]
+                    }),
+                    "recentTask": jsonValue(recentTaskByDevice[snapshot.id].map {
+                        [
+                            "kind": $0.kind.title,
+                            "state": String(describing: $0.state),
+                            "title": $0.title,
+                            "detail": $0.detail,
+                        ]
+                    }),
+                ]
+            },
             "attentionItems": attentionItems.map { item in
                 [
                     "deviceIdentifier": item.deviceIdentifier,
@@ -1096,6 +1131,7 @@ final class AppModel {
                 ]
             },
             "drives": drives,
+            "liveProbeDiagnostics": liveProbeDiagnostics,
         ]
     }
 

@@ -20,7 +20,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button {
-                    Task { await model.refresh() }
+                    Task { await model.refresh(respectAdminPreference: false) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }

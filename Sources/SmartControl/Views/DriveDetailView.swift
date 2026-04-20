@@ -743,6 +743,19 @@ struct DriveDetailView: View {
                         }
                         .buttonStyle(.link)
                     }
+                } else {
+                    HStack(spacing: 12) {
+                        Button("Export Scan Diagnostics") {
+                            Task { await model.exportDiagnostics() }
+                        }
+
+                        if issue.kind == .permissionRequired {
+                            Button("Refresh as Admin") {
+                                Task { await model.refreshSelection(forcePrivilegePrompt: true) }
+                            }
+                            .buttonStyle(.link)
+                        }
+                    }
                 }
 
                 if let fallback = device.fallbackMetrics {

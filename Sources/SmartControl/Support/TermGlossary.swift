@@ -140,7 +140,7 @@ enum TermGlossary {
     static func setting(_ label: String) -> String? {
         switch label {
         case "Always use administrator access when reading SMART data":
-            return "When enabled, SmartControl prefers privileged SMART reads up front instead of waiting until a drive asks for them."
+            return "When enabled, SmartControl prefers privileged reads for admin-specific flows. Ordinary refreshes stay ordinary."
         case "Notify when self-tests finish or drive health gets worse":
             return "Posts a macOS notification only for meaningful events, not every routine refresh."
         case "Background Checks":

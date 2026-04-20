@@ -23,7 +23,7 @@ struct SettingsView: View {
                 notificationStatusView
 
                 Button("Refresh Now") {
-                    Task { await model.refresh(forcePrivilegePrompt: model.preferAdministratorAccess) }
+                    Task { await model.refresh(forcePrivilegePrompt: false, respectAdminPreference: false) }
                 }
             }
 
