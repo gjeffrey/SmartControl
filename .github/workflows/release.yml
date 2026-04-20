@@ -1,6 +1,6 @@
 name: Release
 
-on:
+'on':
   workflow_dispatch:
   push:
     tags:
@@ -12,6 +12,9 @@ permissions:
 jobs:
   package:
     runs-on: macos-15
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.APPLE_DEVELOPER_ID_P12 != '' && secrets.APPLE_DEVELOPER_ID_P12_PASSWORD != '' }}
+      HAS_NOTARIZATION_CREDS: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' }}
 
     steps:
       - name: Check out repository
@@ -26,7 +29,7 @@ jobs:
           fi
 
       - name: Import Developer ID certificate
-        if: ${{ secrets.APPLE_DEVELOPER_ID_P12 != '' && secrets.APPLE_DEVELOPER_ID_P12_PASSWORD != '' }}
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
           APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
@@ -63,7 +66,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          if [[ -n "$SIGNING_IDENTITY" && -n "$APPLE_ID" && -n "$APPLE_TEAM_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" ]]; then
+          if [[ "$HAS_NOTARIZATION_CREDS" == "true" ]]; then
             export NOTARIZE=1
           fi
 
