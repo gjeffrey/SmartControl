@@ -16,7 +16,9 @@ struct SettingsView: View {
                 InstallCommandRow(command: "brew install smartmontools")
 
                 Toggle("Always use administrator access when reading SMART data", isOn: $model.preferAdministratorAccess)
+                    .contextualHelp(TermGlossary.setting("Always use administrator access when reading SMART data"))
                 Toggle("Notify when self-tests finish or drive health gets worse", isOn: $model.notificationsEnabled)
+                    .contextualHelp(TermGlossary.setting("Notify when self-tests finish or drive health gets worse"))
 
                 notificationStatusView
 
@@ -31,8 +33,10 @@ struct SettingsView: View {
                         Text(cadence.title).tag(cadence)
                     }
                 }
+                .contextualHelp(TermGlossary.setting("Background Checks"))
 
                 Toggle("Only monitor external drives", isOn: $model.monitoringExternalOnly)
+                    .contextualHelp(TermGlossary.setting("Only monitor external drives"))
 
                 Text("Monitoring runs only while SmartControl is open. It checks connected drives quietly without prompting for administrator access.")
                     .foregroundStyle(.secondary)

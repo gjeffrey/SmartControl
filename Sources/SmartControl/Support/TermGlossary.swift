@@ -13,6 +13,10 @@ enum TermGlossary {
             return "The exact smartctl command and raw JSON. Helpful for troubleshooting, and gloriously unhelpful if you were hoping for bedside manner."
         case "Self-Test":
             return "The drive's built-in diagnostic. Short is quick. Extended is slower, nosier, and usually more revealing."
+        case "Current Attention":
+            return "Drives or events that currently deserve a second look."
+        case "Recent Events":
+            return "A recent feed of changes SmartControl thought were worth recording."
         default:
             return nil
         }
@@ -120,14 +124,44 @@ enum TermGlossary {
         switch label {
         case "Name":
             return "The attribute the drive is reporting."
-        case "Current":
-            return "The drive's current normalized score for this attribute. Higher is usually better."
-        case "Worst":
+        case "Reported Value":
+            return "The literal counter or sensor value reported by the drive. Usually the easiest column for humans to read."
+        case "Health Score":
+            return "The drive's current normalized health score for this attribute. Higher is usually better, and 100 here is often just a firmware score, not 100%."
+        case "Lowest Score":
             return "The lowest normalized score this attribute has recorded."
-        case "Threshold":
-            return "If the current score falls to or below this line, the drive considers it a failure point."
-        case "Raw":
-            return "The literal counter or sensor value reported by the drive. Often the most interesting column."
+        case "Failure Score":
+            return "If the current normalized score falls to or below this line, the drive considers it a failure point."
+        default:
+            return nil
+        }
+    }
+
+    static func setting(_ label: String) -> String? {
+        switch label {
+        case "Always use administrator access when reading SMART data":
+            return "When enabled, SmartControl prefers privileged SMART reads up front instead of waiting until a drive asks for them."
+        case "Notify when self-tests finish or drive health gets worse":
+            return "Posts a macOS notification only for meaningful events, not every routine refresh."
+        case "Background Checks":
+            return "How often SmartControl should quietly re-check connected drives while the app is open."
+        case "Only monitor external drives":
+            return "Leaves the internal drive alone unless you inspect it manually. Useful if you mainly care about removable storage."
+        case "Export Diagnostics":
+            return "Exports a support-friendly bundle of drive summaries, events, and raw SMART data."
+        default:
+            return nil
+        }
+    }
+
+    static func attention(_ label: String) -> String? {
+        switch label {
+        case "Attention Center":
+            return "The app-wide view for what changed, what needs a look, and what SmartControl thinks matters right now."
+        case "Current Attention":
+            return "The active warnings and higher-priority events across all visible drives."
+        case "Recent Events":
+            return "A rolling event feed, ordered by recency."
         default:
             return nil
         }
