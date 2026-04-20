@@ -9,7 +9,7 @@ struct DriveDetailView: View {
         Group {
             if let snapshot = model.selectedSnapshot {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 22) {
                         heroCard(for: snapshot)
                         if shouldShowActivityCard(for: snapshot) {
                             activityCard(for: snapshot)
@@ -43,7 +43,7 @@ struct DriveDetailView: View {
                             volumesCard(for: snapshot.device)
                         }
                     }
-                    .padding(28)
+                    .padding(26)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
             } else {
@@ -174,7 +174,7 @@ struct DriveDetailView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ProgressView(value: Double(100 - remaining), total: 100)
                                 .tint(taskColor(task))
-                            Text("About \(remaining)% of the test remains. SmartControl will check again automatically.")
+                            Text("About \(remaining)% remains. SmartControl will check again automatically.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -216,7 +216,7 @@ struct DriveDetailView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Refreshing SMART data")
                         .font(.title3.weight(.semibold))
-                    Text("Polling telemetry, health flags, and event state.")
+                    Text("Collecting health flags and telemetry.")
                         .foregroundStyle(.secondary)
                 }
 
@@ -343,25 +343,15 @@ struct DriveDetailView: View {
 
         if !events.isEmpty {
             SectionCard("Recent Events") {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
                     ForEach(events) { event in
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: eventIcon(event))
-                                .foregroundStyle(eventColor(event))
-                                .frame(width: 16)
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(event.title)
-                                    .font(.headline)
-                                Text(event.detail)
-                                    .foregroundStyle(.secondary)
-                                Text(Formatters.dateTime(event.createdAt))
-                                    .font(.footnote)
-                                    .foregroundStyle(.tertiary)
-                            }
-
-                            Spacer()
-                        }
+                        EventRow(
+                            icon: eventIcon(event),
+                            color: eventColor(event),
+                            eyebrow: Formatters.dateTime(event.createdAt),
+                            title: event.title,
+                            detail: event.detail
+                        )
                     }
                 }
             }
@@ -426,7 +416,7 @@ struct DriveDetailView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ProgressView(value: Double(100 - remaining), total: 100)
                                 .tint(selfTestColor(status))
-                            Text("About \(remaining)% of the test remains. SmartControl will check again automatically.")
+                            Text("About \(remaining)% remains. SmartControl will check again automatically.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -579,18 +569,18 @@ struct DriveDetailView: View {
                 }
 
                 Text(selfTestRunning
-                    ? "A self-test is currently running. SmartControl will refresh automatically and show the result here when it finishes."
+                    ? "A self-test is running. SmartControl will refresh automatically and show the result here."
                     : awaitingAdminRefresh
                         ? "This drive likely needs administrator access before SmartControl can show self-test progress or results."
                         : bridgeNote != nil
                             ? "This enclosure is reporting a self-test state, but SmartControl cannot confirm that it applies to this specific drive."
-                        : "Short tests are quick confidence checks. Extended tests are better before a migration, backup validation, or when a drive starts behaving strangely.")
+                        : "Short tests are quick confidence checks. Extended tests are better before migrations, backup validation, or when a drive behaves oddly.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                 Divider()
 
-                Text("What To Do Next")
+                Text("Next Best Steps")
                     .font(.headline)
 
                 ForEach(inspection.recommendations, id: \.self) { recommendation in
@@ -637,65 +627,30 @@ struct DriveDetailView: View {
         return SectionCard("Recent Checks") {
             VStack(alignment: .leading, spacing: 16) {
                 if let previous {
-                    Text("Since \(Formatters.dateTime(previous.capturedAt))")
-                        .font(.headline)
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        historyChangeRow(
-                            title: "Temperature",
-                            current: Formatters.temperature(inspection.summary.temperatureC),
-                            change: Formatters.signedTemperatureDelta(from: previous.temperatureC, to: inspection.summary.temperatureC)
-                        )
-                        historyChangeRow(
-                            title: "Endurance Used",
-                            current: Formatters.percentage(inspection.summary.percentageUsed),
-                            change: Formatters.signedIntDelta(from: previous.percentageUsed, to: inspection.summary.percentageUsed, suffix: "%")
-                        )
-                        historyChangeRow(
-                            title: "Spare Remaining",
-                            current: inspection.summary.availableSpare.map { "\($0)%" } ?? "Unavailable",
-                            change: Formatters.signedIntDelta(from: previous.availableSpare, to: inspection.summary.availableSpare, suffix: "%")
-                        )
-                        historyChangeRow(
-                            title: "Alerts",
-                            current: "\(inspection.alerts.count)",
-                            change: Formatters.signedIntDelta(from: previous.alertsCount, to: inspection.alerts.count)
-                        )
-                    }
+                    historySummaryGrid(previous: previous, inspection: inspection)
 
                     if inspection.health == previous.health,
                        inspection.alerts.count == previous.alertsCount,
                        Formatters.signedTemperatureDelta(from: previous.temperatureC, to: inspection.summary.temperatureC) == "unchanged",
                        Formatters.signedIntDelta(from: previous.percentageUsed, to: inspection.summary.percentageUsed, suffix: "%") == "unchanged",
                        Formatters.signedIntDelta(from: previous.availableSpare, to: inspection.summary.availableSpare, suffix: "%") == "unchanged" {
-                        Text("Nothing material has changed since the last meaningful check.")
+                        Text("No material change since the last meaningful check.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("SmartControl is now tracking this drive. Refresh later or run a self-test to start building a useful history.")
+                    Text("SmartControl is now tracking this drive. Refresh later or run a self-test to build history.")
                         .foregroundStyle(.secondary)
                 }
 
                 if !recent.isEmpty {
                     Divider()
 
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("Timeline")
                             .font(.headline)
 
                         ForEach(recent) { entry in
-                            HStack {
-                                Text(Formatters.dateTime(entry.capturedAt))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Text(entry.health.title)
-                                    .foregroundStyle(historyColor(entry.health))
-                                if let temperature = entry.temperatureC {
-                                    Text("\(Int(temperature.rounded()))°C")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .font(.subheadline)
+                            TimelineRow(entry: entry)
                         }
                     }
                 }
@@ -703,20 +658,52 @@ struct DriveDetailView: View {
         }
     }
 
-    private func historyChangeRow(title: String, current: String, change: String?) -> some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(current)
-                .fontWeight(.semibold)
-            if let change {
-                Text(change)
-                    .foregroundStyle(change == "unchanged" ? .secondary : .tertiary)
-                    .frame(minWidth: 80, alignment: .trailing)
+    private func historySummaryGrid(previous: HistoricalDriveSnapshot, inspection: DeviceInspection) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Since \(Formatters.dateTime(previous.capturedAt))")
+                .font(.headline)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 14)], spacing: 14) {
+                historyMetricTile(
+                    title: "Temperature",
+                    current: Formatters.temperature(inspection.summary.temperatureC),
+                    change: Formatters.signedTemperatureDelta(from: previous.temperatureC, to: inspection.summary.temperatureC)
+                )
+                historyMetricTile(
+                    title: "Endurance Used",
+                    current: Formatters.percentage(inspection.summary.percentageUsed),
+                    change: Formatters.signedIntDelta(from: previous.percentageUsed, to: inspection.summary.percentageUsed, suffix: "%")
+                )
+                historyMetricTile(
+                    title: "Spare Remaining",
+                    current: inspection.summary.availableSpare.map { "\($0)%" } ?? "Unavailable",
+                    change: Formatters.signedIntDelta(from: previous.availableSpare, to: inspection.summary.availableSpare, suffix: "%")
+                )
+                historyMetricTile(
+                    title: "Alerts",
+                    current: "\(inspection.alerts.count)",
+                    change: Formatters.signedIntDelta(from: previous.alertsCount, to: inspection.alerts.count)
+                )
             }
         }
-        .font(.subheadline)
+    }
+
+    private func historyMetricTile(title: String, current: String, change: String?) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text(current)
+                .font(.title3.weight(.semibold))
+            if let change {
+                Text(change == "unchanged" ? "No change" : change)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(change == "unchanged" ? .secondary : .tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func historyColor(_ health: OverallHealth) -> Color {
@@ -855,9 +842,7 @@ struct DriveDetailView: View {
 
         return SectionCard("SMART Attributes") {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Hover a term if it sounds like something firmware engineers named before lunch.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                attributeIntroGrid
 
                 if importantAttributes.isEmpty {
                     Text("This drive mostly reports vendor-specific SMART attributes. Most users can ignore those unless they are troubleshooting with the drive vendor.")
@@ -882,39 +867,137 @@ struct DriveDetailView: View {
 
     @ViewBuilder
     private func attributeTable(attributes: [DeviceInspection.Attribute]) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-            GridRow {
-                Text("Name").font(.headline).contextualHelp(TermGlossary.attributeColumn("Name"))
-                Text("Current").font(.headline).contextualHelp(TermGlossary.attributeColumn("Current"))
-                Text("Worst").font(.headline).contextualHelp(TermGlossary.attributeColumn("Worst"))
-                Text("Threshold").font(.headline).contextualHelp(TermGlossary.attributeColumn("Threshold"))
-                Text("Raw").font(.headline).contextualHelp(TermGlossary.attributeColumn("Raw"))
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            attributeTableHeader
 
-            Divider()
+            ForEach(Array(attributes.enumerated()), id: \.element.id) { index, attribute in
+                if index > 0 {
+                    Divider()
+                }
 
-            ForEach(attributes) { attribute in
-                GridRow(alignment: .top) {
-                    let readableName = readableAttributeName(attribute.name)
+                let readableName = readableAttributeName(attribute.name)
+                let assessment = attributeAssessment(for: attribute, readableName: readableName)
 
-                    VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(readableName)
-                            .font(.body.weight(.medium))
+                            .font(.body.weight(.semibold))
                             .contextualHelp(TermGlossary.attribute(readableName))
+
+                        AttributeAssessmentView(assessment: assessment)
+
                         if let status = attribute.status {
                             Text(status)
                                 .font(.caption)
                                 .foregroundStyle(.red)
                         }
                     }
-                    Text(attribute.current ?? "—")
-                    Text(attribute.worst ?? "—")
-                    Text(attribute.threshold ?? "—")
-                    Text(attribute.raw ?? "—")
-                        .font(.body.monospaced())
+                    .frame(width: 228, alignment: .leading)
+
+                    Text(formattedReportedValue(for: attribute, readableName: readableName))
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 170, alignment: .leading)
+                        .contextualHelp(TermGlossary.attribute(readableName))
+
+                    HStack(spacing: 18) {
+                        scoreCell(
+                            title: "Now",
+                            value: attribute.current ?? "—",
+                            emphasize: assessment.emphasizeScores
+                        )
+                        scoreCell(
+                            title: "Low",
+                            value: attribute.worst ?? "—",
+                            emphasize: assessment.emphasizeScores
+                        )
+                        scoreCell(
+                            title: "Fail",
+                            value: attribute.threshold ?? "—",
+                            emphasize: assessment.emphasizeScores
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(.vertical, 14)
             }
         }
+        .padding(18)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var attributeIntroGrid: some View {
+        HStack(alignment: .top, spacing: 16) {
+            attributeIntroTile(
+                title: "Read This First",
+                body: "Reported Value is the literal reading. Start there."
+            )
+            attributeIntroTile(
+                title: "About The 100s",
+                body: "Health Score is a firmware scale. Repeated 100s are common and do not mean 100%."
+            )
+            attributeIntroTile(
+                title: "Reference Rows",
+                body: "Some rows are context counters, not pass-fail gauges. Hours, cycles, and LBAs live here."
+            )
+        }
+    }
+
+    private func attributeIntroTile(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+            Text(body)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var attributeTableHeader: some View {
+        HStack(alignment: .bottom, spacing: 24) {
+            Text("Attribute")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .frame(width: 228, alignment: .leading)
+                .contextualHelp(TermGlossary.attributeColumn("Name"))
+
+            Text("Reported Value")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .frame(width: 170, alignment: .leading)
+                .contextualHelp(TermGlossary.attributeColumn("Reported Value"))
+
+            HStack(spacing: 18) {
+                Text("Health Score")
+                    .frame(width: 58, alignment: .leading)
+                    .contextualHelp(TermGlossary.attributeColumn("Health Score"))
+                Text("Lowest Score")
+                    .frame(width: 58, alignment: .leading)
+                    .contextualHelp(TermGlossary.attributeColumn("Lowest Score"))
+                Text("Failure Score")
+                    .frame(width: 58, alignment: .leading)
+                    .contextualHelp(TermGlossary.attributeColumn("Failure Score"))
+            }
+            .font(.headline)
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.bottom, 14)
+    }
+
+    private func scoreCell(title: String, value: String, emphasize: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(emphasize ? .primary : .secondary)
+        }
+        .frame(width: 58, alignment: .leading)
     }
 
     private func isVendorSpecificAttribute(_ attribute: DeviceInspection.Attribute) -> Bool {
@@ -952,6 +1035,142 @@ struct DriveDetailView: View {
         default:
             return name.replacingOccurrences(of: "_", with: " ")
         }
+    }
+
+    private func formattedReportedValue(for attribute: DeviceInspection.Attribute, readableName: String) -> String {
+        guard let raw = attribute.raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return "—"
+        }
+
+        switch readableName {
+        case "Reallocated Sectors":
+            return appendUnit("sectors", to: raw)
+        case "Power-On Hours":
+            return appendUnit("h", to: raw)
+        case "Power Cycles":
+            return appendUnit("cycles", to: raw)
+        case "End-to-End Errors", "Reported Uncorrectable Errors", "CRC Errors":
+            return appendUnit("errors", to: raw)
+        case "Command Timeouts":
+            return appendUnit("timeouts", to: raw)
+        case "Temperature":
+            return formattedTemperatureRawValue(raw)
+        case "Available Reserved Space":
+            return raw.hasSuffix("%") ? raw : "\(raw)%"
+        case "Total LBAs Written", "Total LBAs Read":
+            return appendUnit("LBAs", to: raw)
+        case "Media Wearout Indicator":
+            return "\(raw) vendor units"
+        default:
+            return raw
+        }
+    }
+
+    private func appendUnit(_ unit: String, to raw: String) -> String {
+        guard let value = Int(raw) else {
+            return raw
+        }
+
+        return "\(value.formatted()) \(unit)"
+    }
+
+    private func formattedTemperatureRawValue(_ raw: String) -> String {
+        let digits = raw.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+        guard let current = digits.first else {
+            return raw
+        }
+
+        if digits.count >= 3 {
+            return "\(current) °C (min/max \(digits[1])/\(digits[2]) °C)"
+        }
+
+        return "\(current) °C"
+    }
+
+    private func attributeAssessment(for attribute: DeviceInspection.Attribute, readableName: String) -> AttributeAssessment {
+        if let current = Int(attribute.current ?? ""),
+           let threshold = Int(attribute.threshold ?? ""),
+           threshold > 0,
+           current <= threshold {
+            return AttributeAssessment(kind: .bad, summary: "at or past the drive's failure score", emphasizeScores: true)
+        }
+
+        let rawInt = primaryInteger(from: attribute.raw)
+
+        switch readableName {
+        case "Reallocated Sectors":
+            if let rawInt, rawInt > 0 {
+                return AttributeAssessment(kind: .watch, summary: "should ideally stay at 0", emphasizeScores: true)
+            }
+            return AttributeAssessment(kind: .good, summary: "no remapped sectors reported", emphasizeScores: true)
+        case "End-to-End Errors", "Reported Uncorrectable Errors", "CRC Errors":
+            if let rawInt, rawInt > 0 {
+                return AttributeAssessment(kind: .watch, summary: "errors should ideally stay at 0", emphasizeScores: true)
+            }
+            return AttributeAssessment(kind: .good, summary: "no errors reported", emphasizeScores: true)
+        case "Command Timeouts":
+            if let rawInt, rawInt > 0 {
+                return AttributeAssessment(kind: .watch, summary: "timeouts can point to a stressed link or drive", emphasizeScores: true)
+            }
+            return AttributeAssessment(kind: .good, summary: "no timeouts reported", emphasizeScores: true)
+        case "Temperature":
+            if let temperature = primaryInteger(from: attribute.raw) {
+                if temperature >= 55 {
+                    return AttributeAssessment(kind: .bad, summary: "running hotter than it should", emphasizeScores: false)
+                }
+                if temperature >= 50 {
+                    return AttributeAssessment(kind: .watch, summary: "warm, but not automatically alarming", emphasizeScores: false)
+                }
+                return AttributeAssessment(kind: .good, summary: "within a comfortable range", emphasizeScores: false)
+            }
+            return AttributeAssessment(kind: .unknown, summary: "no clear temperature reading", emphasizeScores: false)
+        case "Available Reserved Space":
+            if let current = Int(attribute.current ?? ""),
+               let threshold = Int(attribute.threshold ?? ""),
+               current > threshold {
+                return AttributeAssessment(kind: .good, summary: "comfortably above the failure score", emphasizeScores: true)
+            }
+            if let rawInt {
+                if rawInt <= 10 {
+                    return AttributeAssessment(kind: .watch, summary: "spare pool is getting low", emphasizeScores: true)
+                }
+                return AttributeAssessment(kind: .good, summary: "plenty of spare space remains", emphasizeScores: true)
+            }
+            return AttributeAssessment(kind: .unknown, summary: "vendor reserve reading", emphasizeScores: true)
+        case "Media Wearout Indicator":
+            return AttributeAssessment(kind: .reference, summary: "vendor wear counter; compare over time", emphasizeScores: false)
+        case "Power-On Hours":
+            return AttributeAssessment(kind: .reference, summary: "age counter, not a failure signal by itself", emphasizeScores: false)
+        case "Power Cycles":
+            return AttributeAssessment(kind: .reference, summary: "lifetime power-up count", emphasizeScores: false)
+        case "Total LBAs Written":
+            return AttributeAssessment(kind: .reference, summary: "lifetime writes, not a score", emphasizeScores: false)
+        case "Total LBAs Read":
+            return AttributeAssessment(kind: .reference, summary: "lifetime reads, not a score", emphasizeScores: false)
+        default:
+            if let current = Int(attribute.current ?? ""),
+               let threshold = Int(attribute.threshold ?? ""),
+               threshold > 0 {
+                if current <= threshold {
+                    return AttributeAssessment(kind: .bad, summary: "at or below the drive's failure score", emphasizeScores: true)
+                }
+                return AttributeAssessment(kind: .good, summary: "firmware score is comfortably above failure", emphasizeScores: true)
+            }
+            return AttributeAssessment(kind: .reference, summary: "reported for context", emphasizeScores: false)
+        }
+    }
+    private func primaryInteger(from raw: String?) -> Int? {
+        guard let raw else {
+            return nil
+        }
+
+        let digits = raw.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }
+        guard let first = digits.first else {
+            return nil
+        }
+
+        return Int(first)
     }
 
     private func rawOutputCard(for inspection: DeviceInspection) -> some View {
@@ -1048,7 +1267,7 @@ private struct SectionCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             if !title.isEmpty {
                 Text(title)
                     .font(.headline)
@@ -1058,12 +1277,155 @@ private struct SectionCard<Content: View>: View {
 
             content
         }
-        .padding(22)
+        .padding(20)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06))
         )
+    }
+}
+
+private struct AttributeAssessment: Hashable {
+    enum Kind: Hashable {
+        case good
+        case watch
+        case bad
+        case reference
+        case unknown
+
+        var title: String {
+            switch self {
+            case .good:
+                return "Good"
+            case .watch:
+                return "Watch"
+            case .bad:
+                return "Bad"
+            case .reference:
+                return "Reference"
+            case .unknown:
+                return "Unknown"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .good:
+                return .green
+            case .watch:
+                return .orange
+            case .bad:
+                return .red
+            case .reference:
+                return .secondary
+            case .unknown:
+                return .secondary
+            }
+        }
+    }
+
+    let kind: Kind
+    let summary: String
+    let emphasizeScores: Bool
+}
+
+private struct AttributeAssessmentView: View {
+    let assessment: AttributeAssessment
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(assessment.kind.title)
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(assessment.kind.color.opacity(0.14), in: Capsule())
+                .foregroundStyle(assessment.kind.color)
+
+            Text(assessment.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+    }
+}
+
+private struct EventRow: View {
+    let icon: String
+    let color: Color
+    let eyebrow: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(eyebrow)
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                    .frame(width: 18, height: 18)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                    Text(detail)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct TimelineRow: View {
+    let entry: HistoricalDriveSnapshot
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Formatters.dateTime(entry.capturedAt))
+                    .font(.subheadline.weight(.medium))
+                Text("Recorded health snapshot")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 14) {
+                Text(entry.health.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color(for: entry.health))
+
+                if let temperature = entry.temperatureC {
+                    Text("\(Int(temperature.rounded()))°C")
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(14)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func color(for health: OverallHealth) -> Color {
+        switch health {
+        case .healthy:
+            return .green
+        case .caution:
+            return .orange
+        case .critical:
+            return .red
+        case .unknown:
+            return .secondary
+        }
     }
 }

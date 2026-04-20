@@ -6,7 +6,7 @@ struct SidebarView: View {
 
     var body: some View {
         List {
-            Section {
+            Section("Overview") {
                 AttentionHomeRow(isSelected: model.isShowingAttentionCenter)
                     .contentShape(Rectangle())
                     .onTapGesture {
@@ -14,7 +14,7 @@ struct SidebarView: View {
                     }
             }
 
-            Section {
+            Section("Drives") {
                 ForEach(model.filteredSnapshots) { snapshot in
                     SidebarRow(
                         snapshot: snapshot,
@@ -42,6 +42,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .environment(\.defaultMinListRowHeight, 54)
         .navigationTitle("Drives")
         .overlay {
             if model.snapshots.isEmpty && !model.isRefreshing {
@@ -64,30 +65,41 @@ private struct SidebarRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: snapshot.device.isInternal ? "internaldrive.fill" : "externaldrive.fill")
-                .font(.title3)
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(statusColor, .secondary)
-                .frame(width: 24)
+                .frame(width: 18, height: 18)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(snapshot.device.displayName)
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
+
+                    Spacer(minLength: 8)
 
                     activityIndicator
                 }
 
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    Text(metadataText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(metadataColor)
+                        .lineLimit(1)
+                }
             }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear)
         )
         .accessibilityElement(children: .combine)
@@ -132,11 +144,39 @@ private struct SidebarRow: View {
 
         switch task.state {
         case .running:
-            return task.title
+            return snapshot.device.subtitle
         case .waitingForAdmin:
-            return "Needs admin to check progress"
+            return snapshot.device.subtitle
         case .succeeded, .failed:
             return snapshot.device.subtitle
+        }
+    }
+
+    private var metadataText: String {
+        guard let task else {
+            return statusTitle
+        }
+
+        switch task.state {
+        case .running:
+            return task.kind.isSelfTest ? "Testing" : "Refreshing"
+        case .waitingForAdmin:
+            return "Admin"
+        case .succeeded, .failed:
+            return statusTitle
+        }
+    }
+
+    private var metadataColor: Color {
+        switch activity {
+        case .idle:
+            return statusColor
+        case .refreshing:
+            return .secondary
+        case .selfTestRunning:
+            return .blue
+        case .awaitingAdminRefresh:
+            return .orange
         }
     }
 
@@ -194,22 +234,29 @@ private struct AttentionRow: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: item.severity == .critical ? "exclamationmark.octagon.fill" : "bell.badge.fill")
                 .foregroundStyle(item.severity == .critical ? .red : .orange)
-                .frame(width: 14)
+                .frame(width: 16, height: 16)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.deviceName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(item.deviceName)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(item.severity == .critical ? "Critical" : "Watch")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(item.severity == .critical ? .red : .orange)
+                }
+
                 Text(item.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear)
         )
     }
@@ -222,20 +269,27 @@ private struct AttentionHomeRow: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "scope")
                 .foregroundStyle(.secondary)
-                .frame(width: 16)
+                .frame(width: 16, height: 16)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Attention Center")
-                    .font(.subheadline.weight(.semibold))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Attention Center")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 8)
+                    Text("Home")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
                 Text("Overview and recent events")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear)
         )
     }
